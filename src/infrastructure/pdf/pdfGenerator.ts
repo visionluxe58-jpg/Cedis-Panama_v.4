@@ -5,7 +5,7 @@
 
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { LineaPedido, ClasificacionRepuesto } from '../../domain/models/types';
+import type { LineaPedido } from '../../domain/models/types';
 
 // Colores corporativos Changan
 const COLORS = {
@@ -17,7 +17,6 @@ const COLORS = {
   gray: [100, 100, 100] as [number, number, number],
   grayLight: [220, 220, 220] as [number, number, number],
   white: [255, 255, 255] as [number, number, number],
-  success: [22, 163, 74] as [number, number, number],
 };
 
 export interface DatosPedidoPDF {
@@ -32,14 +31,12 @@ export interface DatosPedidoPDF {
   noCotizacion: string;
   observaciones: string;
   lineas: LineaPedido[];
-  clasificaciones: (ClasificacionRepuesto | null)[];
   timestamp: string;
 }
 
 export function generarPDFPedido(datos: DatosPedidoPDF): void {
   const doc = new jsPDF('p', 'mm', 'letter');
   const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 15;
   const contentWidth = pageWidth - margin * 2;
 
@@ -55,11 +52,11 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
   doc.setTextColor(...COLORS.white);
   doc.setFontSize(16);
   doc.setFont('helvetica', 'bold');
-  doc.text('CEDIS CHANGAN PANAMÁ', margin, 14);
+  doc.text('CEDIS CHANGAN PANAMA', margin, 14);
 
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
-  doc.text('Sistema de Pedidos Especiales — Comprobante de Confirmación', margin, 21);
+  doc.text('Sistema de Pedidos Especiales - Comprobante de Confirmacion', margin, 21);
 
   doc.setFontSize(8);
   doc.setTextColor(200, 220, 255);
@@ -68,23 +65,23 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
 
   yPos = 40;
 
-  // ═══ TÍTULO ═══
+  // ═══ TITULO ═══
   doc.setFillColor(...COLORS.blueLight);
   doc.roundedRect(margin, yPos, contentWidth, 14, 2, 2, 'F');
   doc.setTextColor(...COLORS.blue);
   doc.setFontSize(13);
   doc.setFont('helvetica', 'bold');
-  doc.text('CONFIRMACIÓN DE PEDIDO ESPECIAL', pageWidth / 2, yPos + 9, { align: 'center' });
+  doc.text('CONFIRMACION DE PEDIDO ESPECIAL', pageWidth / 2, yPos + 9, { align: 'center' });
 
   yPos += 20;
 
-  // ═══ NÚMERO DE PEDIDO ═══
+  // ═══ NUMERO DE PEDIDO ═══
   doc.setFillColor(...COLORS.blueAccent);
   doc.roundedRect(margin, yPos, contentWidth, 16, 2, 2, 'F');
   doc.setTextColor(...COLORS.white);
   doc.setFontSize(10);
   doc.setFont('helvetica', 'normal');
-  doc.text('PEDIDO N°:', margin + 5, yPos + 10);
+  doc.text('PEDIDO N.:', margin + 5, yPos + 10);
   doc.setFontSize(14);
   doc.setFont('helvetica', 'bold');
   doc.text(datos.numeroPedido, margin + 40, yPos + 10);
@@ -122,9 +119,8 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
     ['Canal:', datos.canal],
     ['Sucursal:', datos.sucursal],
     ['Colaborador:', datos.colaborador],
-    ['Fecha Creación:', fecha.toLocaleDateString('es-PA', { day: '2-digit', month: 'long', year: 'numeric' })],
-    ['No. Cotización:', datos.noCotizacion || 'N/A'],
-    ['Observaciones:', datos.observaciones || 'N/A'],
+    ['Fecha:', fecha.toLocaleDateString('es-PA', { day: '2-digit', month: 'long', year: 'numeric' })],
+    ['Cotizacion:', datos.noCotizacion || 'N/A'],
   ];
 
   leftFields.forEach(([label, value]) => {
@@ -137,7 +133,7 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
     yLeft += 7.5;
   });
 
-  // Columna derecha - Datos del Cliente/Vehículo
+  // Columna derecha - Datos del Cliente/Vehiculo
   const rightX = margin + colWidth + 6;
   doc.setFillColor(248, 250, 252);
   doc.roundedRect(rightX, yPos, colWidth, 60, 2, 2, 'F');
@@ -150,7 +146,7 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
   doc.setTextColor(...COLORS.white);
   doc.setFontSize(8);
   doc.setFont('helvetica', 'bold');
-  doc.text('  DATOS DEL CLIENTE / VEHÍCULO', rightX + 2, yPos + 6);
+  doc.text('  DATOS DEL CLIENTE / VEHICULO', rightX + 2, yPos + 6);
 
   let yRight = yPos + 14;
   const rightXField = rightX + 4;
@@ -159,11 +155,11 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
 
   const rightFields = [
     ['Cliente:', datos.cliente],
-    ['Modelo Changan:', datos.modelo],
+    ['Modelo:', datos.modelo],
     ['VIN:', datos.vin],
     ['Placa:', datos.placa || 'N/A'],
-    ['Total Líneas:', `${datos.lineas.length} repuesto(s)`],
-    ['Total Unidades:', `${datos.lineas.reduce((sum, l) => sum + l.cantidad, 0)} unidad(es)`],
+    ['Lineas:', `${datos.lineas.length} repuesto(s)`],
+    ['Unidades:', `${datos.lineas.reduce((sum, l) => sum + l.cantidad, 0)} unidad(es)`],
   ];
 
   rightFields.forEach(([label, value]) => {
@@ -192,21 +188,18 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
   yPos += 3;
 
   const tableBody = datos.lineas.map((linea, idx) => {
-    const clasif = datos.clasificaciones[idx];
-    const viaTexto = clasif?.transporte === 'Aereo' ? '✈ Aéreo' : '🚢 Marítimo';
     return [
       String(idx + 1),
       linea.codigoRepuesto,
       linea.descripcion,
       String(linea.cantidad),
-      viaTexto,
-      linea.motivo || '—',
+      linea.motivo || '-',
     ];
   });
 
   autoTable(doc, {
     startY: yPos,
-    head: [['#', 'Código OEM', 'Descripción', 'Cant.', 'Vía Envío', 'Motivo']],
+    head: [['#', 'Codigo OEM', 'Descripcion', 'Cant.', 'Motivo']],
     body: tableBody,
     theme: 'grid',
     margin: { left: margin, right: margin },
@@ -216,6 +209,8 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
       lineColor: COLORS.grayLight,
       lineWidth: 0.2,
       textColor: COLORS.dark,
+      overflow: 'linebreak',
+      minCellHeight: 10,
     },
     headStyles: {
       fillColor: COLORS.blue,
@@ -225,66 +220,18 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
       halign: 'center',
     },
     columnStyles: {
-      0: { halign: 'center', cellWidth: 8 },
-      1: { cellWidth: 30, fontStyle: 'bold', fontSize: 7 },
+      0: { halign: 'center', cellWidth: 10 },
+      1: { cellWidth: 35, fontStyle: 'bold', fontSize: 7 },
       2: { cellWidth: 'auto' },
-      3: { halign: 'center', cellWidth: 12 },
-      4: { halign: 'center', cellWidth: 20, fontStyle: 'bold' },
-      5: { cellWidth: 30 },
+      3: { halign: 'center', cellWidth: 15 },
+      4: { cellWidth: 45 },
     },
     alternateRowStyles: {
       fillColor: [248, 250, 255],
     },
-    didParseCell: function(data) {
-      if (data.section === 'body' && data.column.index === 4) {
-        const cellText = data.cell.text[0];
-        if (cellText.includes('Aéreo')) {
-          data.cell.styles.textColor = [0, 102, 204];
-          data.cell.styles.fontStyle = 'bold';
-        } else if (cellText.includes('Marítimo')) {
-          data.cell.styles.textColor = [234, 88, 12];
-          data.cell.styles.fontStyle = 'bold';
-        }
-      }
-    },
   });
 
   yPos = (doc as any).lastAutoTable.finalY + 8;
-
-  // ═══ RESUMEN CLASIFICACIÓN LOGÍSTICA ═══
-  const totalAereos = datos.clasificaciones.filter(c => c?.transporte === 'Aereo').length;
-  const totalMaritimos = datos.clasificaciones.filter(c => c?.transporte === 'Maritimo').length;
-  const totalDGR = datos.clasificaciones.filter(c => c?.esDGR).length;
-
-  doc.setFillColor(240, 248, 255);
-  doc.roundedRect(margin, yPos, contentWidth, 20, 2, 2, 'F');
-  doc.setDrawColor(...COLORS.blueAccent);
-  doc.setLineWidth(0.3);
-  doc.roundedRect(margin, yPos, contentWidth, 20, 2, 2, 'S');
-
-  doc.setTextColor(...COLORS.blue);
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'bold');
-  doc.text('CLASIFICACIÓN LOGÍSTICA (IATA):', margin + 4, yPos + 6);
-
-  doc.setFontSize(7);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 102, 204);
-  doc.text(`✈ Vía Aérea: ${totalAereos} repuesto(s) - ~30 días`, margin + 4, yPos + 12);
-  
-  doc.setTextColor(234, 88, 12);
-  doc.text(`🚢 Vía Marítima: ${totalMaritimos} repuesto(s) - ~90 días`, margin + 60, yPos + 12);
-
-  if (totalDGR > 0) {
-    doc.setTextColor(220, 38, 38);
-    doc.text(`⚠️ DGR Clase 9: ${totalDGR} (Marítimo obligatorio)`, margin + 120, yPos + 12);
-  }
-
-  doc.setTextColor(...COLORS.gray);
-  doc.setFontSize(6);
-  doc.text('Clasificación automática según dimensiones, peso y regulaciones de transporte.', margin + 4, yPos + 17);
-
-  yPos += 26;
 
   // ═══ RESUMEN / TOTAL ═══
   const totalUnidades = datos.lineas.reduce((sum, l) => sum + l.cantidad, 0);
@@ -298,9 +245,9 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
   doc.setTextColor(...COLORS.blue);
   doc.setFontSize(8);
   doc.setFont('helvetica', 'bold');
-  doc.text(`TOTAL DE LÍNEAS: ${datos.lineas.length}`, margin + 5, yPos + 7.5);
+  doc.text(`TOTAL DE LINEAS: ${datos.lineas.length}`, margin + 5, yPos + 7.5);
   doc.text(`TOTAL DE UNIDADES: ${totalUnidades}`, margin + contentWidth / 2, yPos + 7.5, { align: 'center' });
-  doc.text(`PEDIDO N°: ${datos.numeroPedido}`, pageWidth - margin - 5, yPos + 7.5, { align: 'right' });
+  doc.text(`PEDIDO N.: ${datos.numeroPedido}`, pageWidth - margin - 5, yPos + 7.5, { align: 'right' });
 
   yPos += 18;
 
@@ -326,7 +273,7 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
 
   yPos += 30;
 
-  // ═══ NOTA ARCHIVO FÍSICO ═══
+  // ═══ NOTA ARCHIVO FISICO ═══
   doc.setFillColor(255, 248, 230);
   doc.setDrawColor(...COLORS.gold);
   doc.setLineWidth(0.3);
@@ -335,25 +282,25 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
   doc.setTextColor(120, 90, 0);
   doc.setFontSize(7);
   doc.setFont('helvetica', 'bold');
-  doc.text('📁 ARCHIVO FÍSICO:', margin + 4, yPos + 5);
+  doc.text('ARCHIVO FISICO:', margin + 4, yPos + 5);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.5);
-  doc.text(`Guarde este documento en el folder correspondiente a la sucursal "${datos.sucursal}". Pedido N°: ${datos.numeroPedido}`, margin + 4, yPos + 10);
+  doc.text(`Guarde este documento en el folder correspondiente a la sucursal "${datos.sucursal}". Pedido N.: ${datos.numeroPedido}`, margin + 4, yPos + 10);
 
   yPos += 20;
 
   // ═══ FOOTER ═══
   doc.setDrawColor(...COLORS.grayLight);
   doc.setLineWidth(0.3);
-  doc.line(margin, pageHeight - 18, pageWidth - margin, pageHeight - 18);
+  doc.line(margin, 270, pageWidth - margin, 270);
 
   doc.setTextColor(...COLORS.gray);
   doc.setFontSize(6);
   doc.setFont('helvetica', 'normal');
-  doc.text('CEDIS Changan Panamá — Sistema de Pedidos Especiales', margin, pageHeight - 13);
-  doc.text(`Documento generado automáticamente — ${fecha.toLocaleString('es-PA')}`, margin, pageHeight - 9);
-  doc.text(`Pedido N°: ${datos.numeroPedido} | Comprobante de confirmación`, pageWidth - margin, pageHeight - 13, { align: 'right' });
-  doc.text('Válido como respaldo físico del pedido electrónico', pageWidth - margin, pageHeight - 9, { align: 'right' });
+  doc.text('CEDIS Changan Panama - Sistema de Pedidos Especiales', margin, 275);
+  doc.text(`Documento generado automaticamente - ${fecha.toLocaleString('es-PA')}`, margin, 279);
+  doc.text(`Pedido N.: ${datos.numeroPedido} | Comprobante de confirmacion`, pageWidth - margin, 275, { align: 'right' });
+  doc.text('Valido como respaldo fisico del pedido electronico', pageWidth - margin, 279, { align: 'right' });
 
   // ═══ GUARDAR ═══
   const nombreArchivo = `Pedido_${datos.numeroPedido}_${fecha.toISOString().slice(0, 10)}.pdf`;
