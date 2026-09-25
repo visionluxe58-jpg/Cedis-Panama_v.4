@@ -3,11 +3,11 @@
  */
 
 import { useState, useEffect } from 'react';
-import type { AuthState, LineaPedido, ClasificacionRepuesto, ItemCotizacionExtraido, MetadatosCotizacion } from '../../domain/models/types';
+import type { AuthState, LineaPedido, ClasificacionRepuesto } from '../../domain/models/types';
 import { nuevoFolio, transmitirPedido } from '../../data/api/client';
 import { clasificarRepuesto } from '../../domain/services';
 import { IAReconocimientoRepuestos, type RepuestoChangan } from '../../domain/services/iaReconocimientoRepuestos';
-import { ExtractorCotizacionesIA } from './ExtractorCotizacionesIA';
+import { SmartSAPPdfExtractorModal } from './SmartSAPPdfExtractorModal';
 
 interface DashboardAsesorProps {
   auth: AuthState;
@@ -18,9 +18,10 @@ const MODELOS_CHANGAN = ['CS15', 'CS35 Plus', 'CS55 Plus', 'CS75 Plus', 'CS95', 
 const CANALES = ['Mostrador', 'Taller', 'Chapistería', 'Bodega', 'Garantía', 'Interno'];
 
 export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
-  const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success' | 'extractor'>('main');
+  const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success'>('main');
   const [numeroPedido, setNumeroPedido] = useState('');
   const [pedidoLoading, setPedidoLoading] = useState(false);
+  const [modalExtractorAbierto, setModalExtractorAbierto] = useState(false);
   
   // Datos del pedido
   const [canal, setCanal] = useState('');
@@ -224,22 +225,33 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     setView('newOrder');
   };
 
-  const handleDatosExtraidosIA = (metadatos: MetadatosCotizacion, repuestos: ItemCotizacionExtraido[]) => {
+  const handleDatosExtraidosIA = (datos: {
+    cliente: string;
+    cotizacion: string;
+    placa: string;
+    vin: string;
+    modeloAuto: string;
+    items: Array<{
+      codigoRepuesto: string;
+      descripcionOficial: string;
+      cantidadSolicitada: number;
+    }>;
+  }) => {
     // Llenar datos del cliente
-    if (metadatos.cliente) setCliente(metadatos.cliente);
-    if (metadatos.vin) setVin(metadatos.vin);
-    if (metadatos.noCotizacion) setNoCotizacion(metadatos.noCotizacion);
-    if (metadatos.modeloAuto) {
+    if (datos.cliente) setCliente(datos.cliente);
+    if (datos.vin) setVin(datos.vin);
+    if (datos.cotizacion) setNoCotizacion(datos.cotizacion);
+    if (datos.modeloAuto) {
       // Intentar extraer el modelo del texto
       const modeloDetectado = MODELOS_CHANGAN.find(m => 
-        metadatos.modeloAuto?.toUpperCase().includes(m.toUpperCase())
+        datos.modeloAuto?.toUpperCase().includes(m.toUpperCase())
       );
       if (modeloDetectado) setModelo(modeloDetectado);
     }
 
     // Llenar líneas de repuestos
-    if (repuestos.length > 0) {
-      const nuevasLineas = repuestos.map(r => ({
+    if (datos.items.length > 0) {
+      const nuevasLineas = datos.items.map(r => ({
         codigoRepuesto: r.codigoRepuesto,
         descripcion: r.descripcionOficial,
         cantidad: r.cantidadSolicitada,
@@ -348,7 +360,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
               </button>
 
               <button
-                onClick={() => setView('extractor')}
+                onClick={() => setModalExtractorAbierto(true)}
                 className="glass-card rounded-2xl p-6 text-left hover:shadow-lg transition-all group cursor-pointer border-2 border-transparent hover:border-purple-400/30"
               >
                 <div className="flex items-start gap-4">
@@ -371,46 +383,6 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                     <h3 className="text-lg font-bold text-gray-400">Historial</h3>
                     <p className="text-sm text-gray-400 mt-1">Próximamente</p>
                   </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Vista Extractor de Cotizaciones IA */}
-        {view === 'extractor' && (
-          <div className="fade-in">
-            <div className="glass-card rounded-2xl p-4 mb-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <i className="fas fa-robot text-purple-600 text-xl"></i>
-                  <h2 className="text-xl font-bold text-changan-blue">Extractor Inteligente de Cotizaciones</h2>
-                </div>
-                <button onClick={() => setView('main')} className="text-gray-500 hover:text-gray-700">
-                  <i className="fas fa-times text-xl"></i>
-                </button>
-              </div>
-              <p className="text-sm text-gray-600 mt-2">
-                Sube una cotización en PDF o imagen y la IA extraerá automáticamente los datos del cliente y los repuestos para llenar el formulario.
-              </p>
-            </div>
-
-            <div className="glass-card rounded-2xl p-6 mb-4">
-              <ExtractorCotizacionesIA onDatosExtraidos={handleDatosExtraidosIA} />
-            </div>
-
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-              <div className="flex items-start gap-3">
-                <i className="fas fa-info-circle text-blue-600 mt-1"></i>
-                <div className="text-sm text-blue-800">
-                  <p className="font-medium mb-1">¿Cómo funciona?</p>
-                  <ol className="list-decimal list-inside space-y-1 text-xs">
-                    <li>Sube una cotización en PDF o imagen (JPG/PNG)</li>
-                    <li>La IA analiza el documento y extrae los datos automáticamente</li>
-                    <li>Revisa los datos extraídos y haz clic en "Usar estos datos"</li>
-                    <li>El formulario se llenará automáticamente con la información extraída</li>
-                    <li>Continúa con el flujo normal de creación de pedido</li>
-                  </ol>
                 </div>
               </div>
             </div>
@@ -977,6 +949,13 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
           </div>
         )}
       </main>
+
+      {/* Modal Extractor Inteligente de Cotizaciones SAP */}
+      <SmartSAPPdfExtractorModal
+        isOpen={modalExtractorAbierto}
+        onClose={() => setModalExtractorAbierto(false)}
+        onAplicarDatos={handleDatosExtraidosIA}
+      />
     </div>
   );
 }
