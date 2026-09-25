@@ -1,9 +1,9 @@
 /**
- * Dashboard de Asesores - Captura de Pedidos
+ * Dashboard de Asesores - Formulario Completo de Captura de Pedidos
  */
 
 import { useState, useEffect } from 'react';
-import type { AuthState, PedidoState, LineaPedido, ClasificacionRepuesto } from '../../domain/models/types';
+import type { AuthState, LineaPedido, ClasificacionRepuesto } from '../../domain/models/types';
 import { nuevoFolio, transmitirPedido } from '../../data/api/client';
 import { clasificarRepuesto } from '../../domain/services';
 
@@ -12,21 +12,30 @@ interface DashboardAsesorProps {
   onLogout: () => void;
 }
 
-const MODELOS_CHANGAN = ['CS15', 'CS35 Plus', 'CS55 Plus', 'CS75 Plus', 'CS95', 'UNI-K', 'UNI-T', 'UNI-V', 'Alsvin', 'Hunter'];
-const TIPOS_PEDIDO = ['Repuestos', 'Garantía', 'Mantenimiento', 'Carrocero', 'Interno'];
+const MODELOS_CHANGAN = ['CS15', 'CS35 Plus', 'CS55 Plus', 'CS75 Plus', 'CS95', 'UNI-K', 'UNI-T', 'UNI-V', 'Alsvin', 'Hunter', 'Deepal S7', 'Deepal SL03', 'Lumin', 'E-Star'];
+const CANALES = ['Mostrador', 'Taller', 'Chapistería', 'Bodega', 'Garantía', 'Interno'];
 
 export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
-  const [view, setView] = useState<'main' | 'newOrder' | 'transmitting' | 'success'>('main');
+  const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success'>('main');
   const [folio, setFolio] = useState('');
   const [folioLoading, setFolioLoading] = useState(false);
-  const [tipoPedido, setTipoPedido] = useState('');
+  
+  // Datos del pedido
+  const [canal, setCanal] = useState('');
   const [cliente, setCliente] = useState('');
   const [modelo, setModelo] = useState('');
   const [vin, setVin] = useState('');
   const [noCotizacion, setNoCotizacion] = useState('');
-  const [lineas, setLineas] = useState<LineaPedido[]>([{ codigoRepuesto: '', descripcion: '', cantidad: 1 }]);
+  const [observaciones, setObservaciones] = useState('');
+  
+  // Líneas de repuestos
+  const [lineas, setLineas] = useState<LineaPedido[]>([
+    { codigoRepuesto: '', descripcion: '', cantidad: 1, motivo: '' }
+  ]);
   const [clasificaciones, setClasificaciones] = useState<(ClasificacionRepuesto | null)[]>([null]);
+  
   const [timestamp, setTimestamp] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (view === 'newOrder' && !folio) {
@@ -42,7 +51,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   };
 
   const addLinea = () => {
-    setLineas([...lineas, { codigoRepuesto: '', descripcion: '', cantidad: 1 }]);
+    setLineas([...lineas, { codigoRepuesto: '', descripcion: '', cantidad: 1, motivo: '' }]);
     setClasificaciones([...clasificaciones, null]);
   };
 
@@ -57,6 +66,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     updated[idx] = { ...updated[idx], [field]: value };
     setLineas(updated);
 
+    // Clasificación automática
     if (field === 'codigoRepuesto' || field === 'descripcion') {
       const codigo = field === 'codigoRepuesto' ? String(value) : updated[idx].codigoRepuesto;
       const descripcion = field === 'descripcion' ? String(value) : updated[idx].descripcion;
@@ -69,13 +79,45 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     }
   };
 
+  const validarFormulario = (): boolean => {
+    const newErrors: Record<string, string> = {};
+    
+    if (!canal) newErrors.canal = 'Seleccione un canal';
+    if (!cliente.trim()) newErrors.cliente = 'Ingrese el nombre del cliente';
+    if (!modelo) newErrors.modelo = 'Seleccione el modelo Changan';
+    if (!vin.trim()) newErrors.vin = 'Ingrese el VIN';
+    else if (vin.length !== 17) newErrors.vin = 'El VIN debe tener 17 caracteres';
+    
+    // Validar líneas
+    lineas.forEach((linea, idx) => {
+      if (!linea.codigoRepuesto.trim()) {
+        newErrors[`linea_${idx}_codigo`] = 'Código requerido';
+      }
+      if (!linea.descripcion.trim()) {
+        newErrors[`linea_${idx}_desc`] = 'Descripción requerida';
+      }
+      if (linea.cantidad < 1) {
+        newErrors[`linea_${idx}_cant`] = 'Mínimo 1';
+      }
+    });
+    
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleContinuar = () => {
+    if (validarFormulario()) {
+      setView('confirm');
+    }
+  };
+
   const handleTransmitir = async () => {
     setView('transmitting');
     const res = await transmitirPedido({
       folio,
       sucursal: auth.sucursal,
       colaborador: auth.nombre,
-      tipoPedido,
+      tipoPedido: canal,
       cliente,
       modeloChangan: modelo,
       vin,
@@ -90,15 +132,21 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
 
   const handleNuevoPedido = () => {
     setFolio('');
-    setTipoPedido('');
+    setCanal('');
     setCliente('');
     setModelo('');
     setVin('');
     setNoCotizacion('');
-    setLineas([{ codigoRepuesto: '', descripcion: '', cantidad: 1 }]);
+    setObservaciones('');
+    setLineas([{ codigoRepuesto: '', descripcion: '', cantidad: 1, motivo: '' }]);
     setClasificaciones([null]);
+    setErrors({});
     setView('newOrder');
   };
+
+  const totalUnidades = lineas.reduce((sum, l) => sum + l.cantidad, 0);
+  const totalAereos = clasificaciones.filter(c => c?.transporte === 'Aereo').length;
+  const totalMaritimos = clasificaciones.filter(c => c?.transporte === 'Maritimo').length;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -176,85 +224,265 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
         {/* Formulario de Nuevo Pedido */}
         {view === 'newOrder' && (
           <div className="fade-in">
-            <div className="glass-card rounded-2xl p-6 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xl font-bold text-changan-blue">Nuevo Pedido</h3>
-                <button onClick={() => setView('main')} className="text-gray-500 hover:text-gray-700">
-                  <i className="fas fa-times text-xl"></i>
-                </button>
-              </div>
-
+            {/* Folio */}
+            <div className="glass-card rounded-2xl p-4 mb-4">
               {folioLoading ? (
-                <div className="text-center py-4">
-                  <i className="fas fa-spinner fa-spin text-changan-accent text-2xl"></i>
-                  <p className="text-gray-500 mt-2">Generando folio...</p>
+                <div className="text-center py-2">
+                  <i className="fas fa-spinner fa-spin text-changan-accent text-xl"></i>
+                  <p className="text-gray-500 text-sm mt-1">Generando folio...</p>
                 </div>
               ) : folio ? (
-                <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-4">
-                  <p className="text-sm text-green-700">
-                    <i className="fas fa-check-circle mr-2"></i>
-                    Folio reservado: <span className="font-mono font-bold">{folio}</span>
-                  </p>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <i className="fas fa-check-circle text-green-600"></i>
+                    <span className="text-sm text-green-700">Folio reservado:</span>
+                    <span className="font-mono font-bold text-changan-blue">{folio}</span>
+                  </div>
+                  <button onClick={() => setView('main')} className="text-gray-500 hover:text-gray-700">
+                    <i className="fas fa-times text-xl"></i>
+                  </button>
                 </div>
               ) : null}
+            </div>
+
+            {/* Datos del Pedido */}
+            <div className="glass-card rounded-2xl p-6 mb-4">
+              <h3 className="text-lg font-bold text-changan-blue mb-4 flex items-center gap-2">
+                <i className="fas fa-clipboard-list text-changan-accent"></i>
+                Datos del Pedido
+              </h3>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Canal */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Pedido *</label>
-                  <select value={tipoPedido} onChange={(e) => setTipoPedido(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-xl">
-                    <option value="">— Seleccionar —</option>
-                    {TIPOS_PEDIDO.map(t => <option key={t} value={t}>{t}</option>)}
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Canal * <span className="text-xs text-gray-500">(Departamento/Área)</span>
+                  </label>
+                  <select 
+                    value={canal} 
+                    onChange={(e) => { setCanal(e.target.value); setErrors({...errors, canal: ''}); }}
+                    className={`w-full px-4 py-2 border rounded-xl ${errors.canal ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                  >
+                    <option value="">— Seleccionar canal —</option>
+                    {CANALES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
+                  {errors.canal && <p className="text-xs text-red-600 mt-1">{errors.canal}</p>}
                 </div>
+
+                {/* Cliente */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Cliente *</label>
-                  <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-xl" />
+                  <input 
+                    type="text" 
+                    value={cliente} 
+                    onChange={(e) => { setCliente(e.target.value); setErrors({...errors, cliente: ''}); }}
+                    placeholder="Nombre del cliente"
+                    className={`w-full px-4 py-2 border rounded-xl ${errors.cliente ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                  />
+                  {errors.cliente && <p className="text-xs text-red-600 mt-1">{errors.cliente}</p>}
                 </div>
+
+                {/* Modelo */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Modelo Changan *</label>
-                  <select value={modelo} onChange={(e) => setModelo(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-xl">
-                    <option value="">— Seleccionar —</option>
+                  <select 
+                    value={modelo} 
+                    onChange={(e) => { setModelo(e.target.value); setErrors({...errors, modelo: ''}); }}
+                    className={`w-full px-4 py-2 border rounded-xl ${errors.modelo ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                  >
+                    <option value="">— Seleccionar modelo —</option>
                     {MODELOS_CHANGAN.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
+                  {errors.modelo && <p className="text-xs text-red-600 mt-1">{errors.modelo}</p>}
                 </div>
+
+                {/* VIN */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">VIN *</label>
-                  <input type="text" value={vin} onChange={(e) => setVin(e.target.value.toUpperCase().slice(0, 17))} className="w-full px-4 py-2 border border-gray-300 rounded-xl font-mono" />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">VIN (17 caracteres) *</label>
+                  <input 
+                    type="text" 
+                    value={vin} 
+                    onChange={(e) => { setVin(e.target.value.toUpperCase().slice(0, 17)); setErrors({...errors, vin: ''}); }}
+                    placeholder="Ej: LS5A3ABR8NA000001"
+                    className={`w-full px-4 py-2 border rounded-xl font-mono ${errors.vin ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                  />
+                  <div className="flex justify-between mt-1">
+                    {errors.vin && <p className="text-xs text-red-600">{errors.vin}</p>}
+                    <p className="text-xs text-gray-400 ml-auto">{vin.length}/17</p>
+                  </div>
+                </div>
+
+                {/* No. Cotización */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">No. de Cotización</label>
+                  <input 
+                    type="text" 
+                    value={noCotizacion} 
+                    onChange={(e) => setNoCotizacion(e.target.value)}
+                    placeholder="Opcional"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-xl"
+                  />
+                </div>
+
+                {/* Observaciones */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Observaciones</label>
+                  <textarea 
+                    value={observaciones} 
+                    onChange={(e) => setObservaciones(e.target.value)}
+                    placeholder="Notas adicionales (opcional)"
+                    rows={2}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-xl resize-none"
+                  />
                 </div>
               </div>
             </div>
 
-            <div className="glass-card rounded-2xl p-6 mb-6">
+            {/* Líneas de Repuestos */}
+            <div className="glass-card rounded-2xl p-6 mb-4">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold text-changan-blue">Líneas de Repuestos</h3>
-                <button onClick={addLinea} className="px-4 py-2 bg-changan-accent text-white rounded-lg text-sm">
+                <h3 className="text-lg font-bold text-changan-blue flex items-center gap-2">
+                  <i className="fas fa-cogs text-changan-accent"></i>
+                  Líneas de Repuestos
+                </h3>
+                <button 
+                  onClick={addLinea} 
+                  className="px-4 py-2 bg-changan-accent hover:bg-changan-blue text-white rounded-lg text-sm transition-colors"
+                >
                   <i className="fas fa-plus mr-1"></i> Agregar Línea
                 </button>
               </div>
 
+              {/* Resumen de Clasificación */}
+              {clasificaciones.some(c => c !== null) && (
+                <div className="mb-4 p-3 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl border border-gray-200">
+                  <div className="flex items-center gap-2 mb-2">
+                    <i className="fas fa-route text-changan-accent"></i>
+                    <h4 className="text-sm font-bold text-gray-800">Clasificación Logística Automática</h4>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-blue-50 rounded-lg p-2 border border-blue-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <i className="fas fa-plane text-blue-600"></i>
+                        <span className="text-xs font-bold text-blue-800">VÍA AÉREA</span>
+                      </div>
+                      <p className="text-xl font-bold text-blue-700">{totalAereos}</p>
+                      <p className="text-xs text-blue-600">repuesto(s)</p>
+                    </div>
+                    <div className="bg-orange-50 rounded-lg p-2 border border-orange-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <i className="fas fa-ship text-orange-600"></i>
+                        <span className="text-xs font-bold text-orange-800">VÍA MARÍTIMA</span>
+                      </div>
+                      <p className="text-xl font-bold text-orange-700">{totalMaritimos}</p>
+                      <p className="text-xs text-orange-600">repuesto(s)</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-4">
                 {lineas.map((linea, idx) => (
-                  <div key={idx} className="border border-gray-200 rounded-xl p-4">
+                  <div key={idx} className="border border-gray-200 rounded-xl p-4 bg-gray-50/50">
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-sm font-bold text-changan-blue">Línea {idx + 1}</span>
                       {lineas.length > 1 && (
-                        <button onClick={() => removeLinea(idx)} className="text-red-500 hover:text-red-700">
-                          <i className="fas fa-trash"></i>
+                        <button 
+                          onClick={() => removeLinea(idx)} 
+                          className="text-red-500 hover:text-red-700 text-sm"
+                        >
+                          <i className="fas fa-trash mr-1"></i>Eliminar
                         </button>
                       )}
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                      <input type="text" placeholder="Código OEM" value={linea.codigoRepuesto} onChange={(e) => updateLinea(idx, 'codigoRepuesto', e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg font-mono text-sm" />
-                      <input type="text" placeholder="Descripción" value={linea.descripcion} onChange={(e) => updateLinea(idx, 'descripcion', e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
-                      <input type="number" min="1" value={linea.cantidad} onChange={(e) => updateLinea(idx, 'cantidad', parseInt(e.target.value) || 1)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-center" />
-                      <input type="text" placeholder="Motivo" value={linea.motivo || ''} onChange={(e) => updateLinea(idx, 'motivo', e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                      {/* Código OEM */}
+                      <div className="md:col-span-3">
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Código OEM *</label>
+                        <input 
+                          type="text" 
+                          value={linea.codigoRepuesto} 
+                          onChange={(e) => updateLinea(idx, 'codigoRepuesto', e.target.value)}
+                          placeholder="Ej: 1422020-KC01"
+                          className={`w-full px-3 py-2 border rounded-lg font-mono text-sm ${errors[`linea_${idx}_codigo`] ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                        />
+                        {errors[`linea_${idx}_codigo`] && <p className="text-xs text-red-600 mt-1">{errors[`linea_${idx}_codigo`]}</p>}
+                      </div>
+
+                      {/* Descripción */}
+                      <div className="md:col-span-5">
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Descripción *</label>
+                        <input 
+                          type="text" 
+                          value={linea.descripcion} 
+                          onChange={(e) => updateLinea(idx, 'descripcion', e.target.value)}
+                          placeholder="Descripción del repuesto"
+                          className={`w-full px-3 py-2 border rounded-lg text-sm ${errors[`linea_${idx}_desc`] ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                        />
+                        {errors[`linea_${idx}_desc`] && <p className="text-xs text-red-600 mt-1">{errors[`linea_${idx}_desc`]}</p>}
+                      </div>
+
+                      {/* Cantidad */}
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Cantidad *</label>
+                        <input 
+                          type="number" 
+                          min="1" 
+                          value={linea.cantidad} 
+                          onChange={(e) => updateLinea(idx, 'cantidad', parseInt(e.target.value) || 1)}
+                          className={`w-full px-3 py-2 border rounded-lg text-sm text-center ${errors[`linea_${idx}_cant`] ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                        />
+                      </div>
+
+                      {/* Motivo */}
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Motivo</label>
+                        <input 
+                          type="text" 
+                          value={linea.motivo || ''} 
+                          onChange={(e) => updateLinea(idx, 'motivo', e.target.value)}
+                          placeholder="Opcional"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        />
+                      </div>
                     </div>
+
+                    {/* Clasificación Visual */}
                     {clasificaciones[idx] && (
-                      <div className={`mt-3 p-3 rounded-lg border-l-4 ${clasificaciones[idx]!.transporte === 'Aereo' ? 'bg-blue-50 border-blue-500' : 'bg-orange-50 border-orange-500'}`}>
-                        <div className="flex items-center gap-2">
-                          <i className={`fas ${clasificaciones[idx]!.transporte === 'Aereo' ? 'fa-plane text-blue-600' : 'fa-ship text-orange-600'}`}></i>
-                          <span className="text-xs font-bold">{clasificaciones[idx]!.transporte === 'Aereo' ? 'VÍA AÉREA' : 'VÍA MARÍTIMA'}</span>
-                          <span className="text-xs text-gray-600">{clasificaciones[idx]!.categoria}</span>
+                      <div className={`mt-3 p-3 rounded-lg border-l-4 ${
+                        clasificaciones[idx]!.transporte === 'Aereo' 
+                          ? 'bg-blue-50 border-blue-500' 
+                          : 'bg-orange-50 border-orange-500'
+                      }`}>
+                        <div className="flex items-start gap-2">
+                          <i className={`fas ${
+                            clasificaciones[idx]!.transporte === 'Aereo' 
+                              ? 'fa-plane text-blue-600' 
+                              : 'fa-ship text-orange-600'
+                          } mt-0.5`}></i>
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                                clasificaciones[idx]!.transporte === 'Aereo' 
+                                  ? 'bg-blue-100 text-blue-800' 
+                                  : 'bg-orange-100 text-orange-800'
+                              }`}>
+                                {clasificaciones[idx]!.transporte === 'Aereo' ? 'VÍA AÉREA' : 'VÍA MARÍTIMA'}
+                              </span>
+                              <span className="text-xs font-medium text-gray-700">
+                                {clasificaciones[idx]!.categoria}
+                              </span>
+                              {clasificaciones[idx]!.esDGR && (
+                                <span className="text-xs font-bold px-2 py-0.5 rounded bg-red-100 text-red-800">
+                                  ⚠️ DGR
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-600 mt-1">
+                              {clasificaciones[idx]!.motivo}
+                            </p>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -263,14 +491,130 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
               </div>
             </div>
 
+            {/* Botones de Acción */}
             <div className="flex gap-3">
-              <button onClick={() => setView('main')} className="px-6 py-3 border border-gray-300 rounded-xl text-gray-600 hover:bg-gray-50">
+              <button 
+                onClick={() => setView('main')} 
+                className="px-6 py-3 border border-gray-300 rounded-xl text-gray-600 hover:bg-gray-50"
+              >
                 <i className="fas fa-arrow-left mr-2"></i>Cancelar
               </button>
               <button
-                onClick={handleTransmitir}
-                disabled={!folio || !tipoPedido || !cliente || !modelo || !vin || lineas.some(l => !l.codigoRepuesto)}
+                onClick={handleContinuar}
+                disabled={!folio || folioLoading}
                 className="btn-primary flex-1 text-white px-6 py-3 rounded-xl font-medium disabled:opacity-50"
+              >
+                <i className="fas fa-check mr-2"></i>Continuar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Vista de Confirmación */}
+        {view === 'confirm' && (
+          <div className="fade-in">
+            <div className="glass-card rounded-2xl p-6 mb-4">
+              <h3 className="text-lg font-bold text-changan-blue mb-4 flex items-center gap-2">
+                <i className="fas fa-clipboard-check text-changan-accent"></i>
+                Confirmación del Pedido
+              </h3>
+
+              <div className="bg-changan-light rounded-xl p-4 mb-4">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                  <div>
+                    <span className="text-gray-500 block text-xs">Folio</span>
+                    <span className="font-mono font-bold text-changan-blue">{folio}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-xs">Canal</span>
+                    <span className="font-medium">{canal}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-xs">Sucursal</span>
+                    <span className="font-medium">{auth.sucursal}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-xs">Cliente</span>
+                    <span className="font-medium">{cliente}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-xs">Modelo</span>
+                    <span className="font-medium">{modelo}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-xs">VIN</span>
+                    <span className="font-mono text-xs">{vin}</span>
+                  </div>
+                  {noCotizacion && (
+                    <div>
+                      <span className="text-gray-500 block text-xs">Cotización</span>
+                      <span className="font-medium">{noCotizacion}</span>
+                    </div>
+                  )}
+                  <div>
+                    <span className="text-gray-500 block text-xs">Colaborador</span>
+                    <span className="font-medium">{auth.nombre}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-xs">Líneas</span>
+                    <span className="font-bold text-changan-accent">{lineas.length}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Resumen de Líneas */}
+              <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">#</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Código</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Descripción</th>
+                      <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Cant.</th>
+                      <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Vía</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {lineas.map((l, i) => (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{l.codigoRepuesto}</td>
+                        <td className="px-3 py-2">{l.descripcion}</td>
+                        <td className="px-3 py-2 text-center font-bold">{l.cantidad}</td>
+                        <td className="px-3 py-2 text-center">
+                          {clasificaciones[i] && (
+                            <span className={`text-xs font-bold ${
+                              clasificaciones[i]!.transporte === 'Aereo' ? 'text-blue-600' : 'text-orange-600'
+                            }`}>
+                              {clasificaciones[i]!.transporte === 'Aereo' ? '✈' : '🚢'}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="p-3 bg-blue-50 rounded-xl text-xs text-blue-700 flex items-start gap-2">
+                <i className="fas fa-info-circle mt-0.5"></i>
+                <span>
+                  Al transmitir, el pedido se registrará en el sistema con estado "TRANSMITIDO". 
+                  Se generará un PDF de confirmación para archivo físico.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setView('newOrder')} 
+                className="px-6 py-3 border border-gray-300 rounded-xl text-gray-600 hover:bg-gray-50"
+              >
+                <i className="fas fa-arrow-left mr-2"></i>Volver
+              </button>
+              <button
+                onClick={handleTransmitir}
+                className="btn-primary flex-1 text-white px-6 py-3 rounded-xl font-medium"
               >
                 <i className="fas fa-paper-plane mr-2"></i>Transmitir Pedido
               </button>
@@ -297,6 +641,8 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 <i className="fas fa-check-circle text-green-600 text-4xl"></i>
               </div>
               <h2 className="text-2xl font-bold text-changan-blue mb-2">¡Pedido Transmitido!</h2>
+              <p className="text-gray-500 mb-6">El pedido ha sido registrado exitosamente.</p>
+              
               <div className="bg-changan-light rounded-xl p-4 mb-6 text-left space-y-2">
                 <div className="flex justify-between">
                   <span className="text-gray-600 text-sm">Folio:</span>
@@ -307,11 +653,27 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                   <span className="font-medium">{cliente}</span>
                 </div>
                 <div className="flex justify-between">
+                  <span className="text-gray-600 text-sm">Modelo:</span>
+                  <span className="font-medium">{modelo}</span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-gray-600 text-sm">Líneas:</span>
                   <span className="font-medium">{lineas.length} repuesto(s)</span>
                 </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600 text-sm">Total Unidades:</span>
+                  <span className="font-medium">{totalUnidades}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600 text-sm">Estado:</span>
+                  <span className="text-green-600 font-bold">TRANSMITIDO</span>
+                </div>
               </div>
-              <button onClick={() => { setView('main'); handleNuevoPedido(); }} className="btn-primary text-white px-6 py-3 rounded-xl font-medium w-full">
+
+              <button 
+                onClick={() => { setView('main'); handleNuevoPedido(); }} 
+                className="btn-primary text-white px-6 py-3 rounded-xl font-medium w-full"
+              >
                 <i className="fas fa-plus mr-2"></i>Crear Nuevo Pedido
               </button>
             </div>
