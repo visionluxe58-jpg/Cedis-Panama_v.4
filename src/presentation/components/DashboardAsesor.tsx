@@ -17,8 +17,8 @@ const CANALES = ['Mostrador', 'Taller', 'Chapistería', 'Bodega', 'Garantía', '
 
 export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success'>('main');
-  const [folio, setFolio] = useState('');
-  const [folioLoading, setFolioLoading] = useState(false);
+  const [numeroPedido, setNumeroPedido] = useState('');
+  const [pedidoLoading, setPedidoLoading] = useState(false);
   
   // Datos del pedido
   const [canal, setCanal] = useState('');
@@ -38,16 +38,16 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (view === 'newOrder' && !folio) {
-      generarFolio();
+    if (view === 'newOrder' && !numeroPedido) {
+      generarNumeroPedido();
     }
   }, [view]);
 
-  const generarFolio = async () => {
-    setFolioLoading(true);
+  const generarNumeroPedido = async () => {
+    setPedidoLoading(true);
     const res = await nuevoFolio(auth.sucursal || '');
-    if (res.folio) setFolio(res.folio);
-    setFolioLoading(false);
+    if (res.folio) setNumeroPedido(res.folio);
+    setPedidoLoading(false);
   };
 
   const addLinea = () => {
@@ -114,7 +114,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   const handleTransmitir = async () => {
     setView('transmitting');
     const res = await transmitirPedido({
-      folio,
+      folio: numeroPedido,
       sucursal: auth.sucursal,
       colaborador: auth.nombre,
       tipoPedido: canal,
@@ -131,7 +131,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   };
 
   const handleNuevoPedido = () => {
-    setFolio('');
+    setNumeroPedido('');
     setCanal('');
     setCliente('');
     setModelo('');
@@ -159,7 +159,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
             </div>
             <div>
               <h1 className="text-lg font-bold leading-tight">CEDIS Changan Panamá</h1>
-              <p className="text-xs text-blue-200">Módulo de Captura de Pedidos</p>
+              <p className="text-xs text-blue-200">Sistema de Pedidos Especiales</p>
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -224,19 +224,19 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
         {/* Formulario de Nuevo Pedido */}
         {view === 'newOrder' && (
           <div className="fade-in">
-            {/* Folio */}
+            {/* Número de Pedido */}
             <div className="glass-card rounded-2xl p-4 mb-4">
-              {folioLoading ? (
+              {pedidoLoading ? (
                 <div className="text-center py-2">
                   <i className="fas fa-spinner fa-spin text-changan-accent text-xl"></i>
-                  <p className="text-gray-500 text-sm mt-1">Generando folio...</p>
+                  <p className="text-gray-500 text-sm mt-1">Generando número de pedido...</p>
                 </div>
-              ) : folio ? (
+              ) : numeroPedido ? (
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <i className="fas fa-check-circle text-green-600"></i>
-                    <span className="text-sm text-green-700">Folio reservado:</span>
-                    <span className="font-mono font-bold text-changan-blue">{folio}</span>
+                    <span className="text-sm text-green-700">Pedido N°:</span>
+                    <span className="font-mono font-bold text-changan-blue">{numeroPedido}</span>
                   </div>
                   <button onClick={() => setView('main')} className="text-gray-500 hover:text-gray-700">
                     <i className="fas fa-times text-xl"></i>
@@ -353,31 +353,64 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 </button>
               </div>
 
-              {/* Resumen de Clasificación */}
+              {/* Resumen de Clasificación con Tiempos Estimados */}
               {clasificaciones.some(c => c !== null) && (
-                <div className="mb-4 p-3 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl border border-gray-200">
-                  <div className="flex items-center gap-2 mb-2">
+                <div className="mb-4 p-4 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl border border-gray-200">
+                  <div className="flex items-center gap-2 mb-3">
                     <i className="fas fa-route text-changan-accent"></i>
                     <h4 className="text-sm font-bold text-gray-800">Clasificación Logística Automática</h4>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="bg-blue-50 rounded-lg p-2 border border-blue-200">
-                      <div className="flex items-center gap-2 mb-1">
-                        <i className="fas fa-plane text-blue-600"></i>
-                        <span className="text-xs font-bold text-blue-800">VÍA AÉREA</span>
+                    {/* VÍA AÉREA */}
+                    <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                          <i className="fas fa-plane text-white text-sm"></i>
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-blue-800 block">VÍA AÉREA</span>
+                          <span className="text-[10px] text-blue-600">Express</span>
+                        </div>
                       </div>
-                      <p className="text-xl font-bold text-blue-700">{totalAereos}</p>
-                      <p className="text-xs text-blue-600">repuesto(s)</p>
+                      <p className="text-2xl font-bold text-blue-700 mb-1">{totalAereos}</p>
+                      <p className="text-xs text-blue-600 mb-2">repuesto(s)</p>
+                      <div className="bg-blue-100 rounded px-2 py-1 flex items-center gap-1">
+                        <i className="fas fa-clock text-blue-600 text-xs"></i>
+                        <span className="text-xs font-bold text-blue-700">~30 días</span>
+                      </div>
                     </div>
-                    <div className="bg-orange-50 rounded-lg p-2 border border-orange-200">
-                      <div className="flex items-center gap-2 mb-1">
-                        <i className="fas fa-ship text-orange-600"></i>
-                        <span className="text-xs font-bold text-orange-800">VÍA MARÍTIMA</span>
+
+                    {/* VÍA MARÍTIMA */}
+                    <div className="bg-orange-50 rounded-lg p-3 border border-orange-200">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center">
+                          <i className="fas fa-ship text-white text-sm"></i>
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-orange-800 block">VÍA MARÍTIMA</span>
+                          <span className="text-[10px] text-orange-600">Contenedor</span>
+                        </div>
                       </div>
-                      <p className="text-xl font-bold text-orange-700">{totalMaritimos}</p>
-                      <p className="text-xs text-orange-600">repuesto(s)</p>
+                      <p className="text-2xl font-bold text-orange-700 mb-1">{totalMaritimos}</p>
+                      <p className="text-xs text-orange-600 mb-2">repuesto(s)</p>
+                      <div className="bg-orange-100 rounded px-2 py-1 flex items-center gap-1">
+                        <i className="fas fa-clock text-orange-600 text-xs"></i>
+                        <span className="text-xs font-bold text-orange-700">~90 días</span>
+                      </div>
                     </div>
                   </div>
+
+                  {/* Tiempo Estimado Total */}
+                  {totalAereos > 0 && totalMaritimos > 0 && (
+                    <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <i className="fas fa-info-circle text-yellow-600"></i>
+                        <p className="text-xs text-yellow-800">
+                          <strong>Pedido mixto:</strong> Los repuestos aéreos llegarán en ~30 días y los marítimos en ~90 días.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -448,27 +481,33 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                       </div>
                     </div>
 
-                    {/* Clasificación Visual */}
+                    {/* Clasificación Visual con Tiempo Estimado */}
                     {clasificaciones[idx] && (
                       <div className={`mt-3 p-3 rounded-lg border-l-4 ${
                         clasificaciones[idx]!.transporte === 'Aereo' 
                           ? 'bg-blue-50 border-blue-500' 
                           : 'bg-orange-50 border-orange-500'
                       }`}>
-                        <div className="flex items-start gap-2">
-                          <i className={`fas ${
+                        <div className="flex items-start gap-3">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
                             clasificaciones[idx]!.transporte === 'Aereo' 
-                              ? 'fa-plane text-blue-600' 
-                              : 'fa-ship text-orange-600'
-                          } mt-0.5`}></i>
+                              ? 'bg-blue-500' 
+                              : 'bg-orange-500'
+                          }`}>
+                            <i className={`fas ${
+                              clasificaciones[idx]!.transporte === 'Aereo' 
+                                ? 'fa-plane text-white' 
+                                : 'fa-ship text-white'
+                            }`}></i>
+                          </div>
                           <div className="flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
                               <span className={`text-xs font-bold px-2 py-0.5 rounded ${
                                 clasificaciones[idx]!.transporte === 'Aereo' 
                                   ? 'bg-blue-100 text-blue-800' 
                                   : 'bg-orange-100 text-orange-800'
                               }`}>
-                                {clasificaciones[idx]!.transporte === 'Aereo' ? 'VÍA AÉREA' : 'VÍA MARÍTIMA'}
+                                {clasificaciones[idx]!.transporte === 'Aereo' ? '✈ VÍA AÉREA' : '🚢 VÍA MARÍTIMA'}
                               </span>
                               <span className="text-xs font-medium text-gray-700">
                                 {clasificaciones[idx]!.categoria}
@@ -479,9 +518,27 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                                 </span>
                               )}
                             </div>
-                            <p className="text-xs text-gray-600 mt-1">
+                            <p className="text-xs text-gray-600 mb-2">
                               {clasificaciones[idx]!.motivo}
                             </p>
+                            <div className={`inline-flex items-center gap-1 px-2 py-1 rounded ${
+                              clasificaciones[idx]!.transporte === 'Aereo' 
+                                ? 'bg-blue-100' 
+                                : 'bg-orange-100'
+                            }`}>
+                              <i className={`fas fa-clock text-xs ${
+                                clasificaciones[idx]!.transporte === 'Aereo' 
+                                  ? 'text-blue-600' 
+                                  : 'text-orange-600'
+                              }`}></i>
+                              <span className={`text-xs font-bold ${
+                                clasificaciones[idx]!.transporte === 'Aereo' 
+                                  ? 'text-blue-700' 
+                                  : 'text-orange-700'
+                              }`}>
+                                Tiempo estimado: {clasificaciones[idx]!.transporte === 'Aereo' ? '~30 días' : '~90 días'}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -501,7 +558,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
               </button>
               <button
                 onClick={handleContinuar}
-                disabled={!folio || folioLoading}
+                disabled={!numeroPedido || pedidoLoading}
                 className="btn-primary flex-1 text-white px-6 py-3 rounded-xl font-medium disabled:opacity-50"
               >
                 <i className="fas fa-check mr-2"></i>Continuar
@@ -522,8 +579,8 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
               <div className="bg-changan-light rounded-xl p-4 mb-4">
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
                   <div>
-                    <span className="text-gray-500 block text-xs">Folio</span>
-                    <span className="font-mono font-bold text-changan-blue">{folio}</span>
+                    <span className="text-gray-500 block text-xs">Pedido N°</span>
+                    <span className="font-mono font-bold text-changan-blue">{numeroPedido}</span>
                   </div>
                   <div>
                     <span className="text-gray-500 block text-xs">Canal</span>
@@ -562,6 +619,26 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 </div>
               </div>
 
+              {/* Resumen de Clasificación */}
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
+                  <div className="flex items-center gap-2 mb-1">
+                    <i className="fas fa-plane text-blue-600"></i>
+                    <span className="text-xs font-bold text-blue-800">VÍA AÉREA</span>
+                  </div>
+                  <p className="text-xl font-bold text-blue-700">{totalAereos} repuesto(s)</p>
+                  <p className="text-xs text-blue-600">~30 días de entrega</p>
+                </div>
+                <div className="bg-orange-50 rounded-lg p-3 border border-orange-200">
+                  <div className="flex items-center gap-2 mb-1">
+                    <i className="fas fa-ship text-orange-600"></i>
+                    <span className="text-xs font-bold text-orange-800">VÍA MARÍTIMA</span>
+                  </div>
+                  <p className="text-xl font-bold text-orange-700">{totalMaritimos} repuesto(s)</p>
+                  <p className="text-xs text-orange-600">~90 días de entrega</p>
+                </div>
+              </div>
+
               {/* Resumen de Líneas */}
               <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
                 <table className="w-full text-sm">
@@ -572,6 +649,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Descripción</th>
                       <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Cant.</th>
                       <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Vía</th>
+                      <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Tiempo</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -586,7 +664,16 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                             <span className={`text-xs font-bold ${
                               clasificaciones[i]!.transporte === 'Aereo' ? 'text-blue-600' : 'text-orange-600'
                             }`}>
-                              {clasificaciones[i]!.transporte === 'Aereo' ? '✈' : '🚢'}
+                              {clasificaciones[i]!.transporte === 'Aereo' ? '✈ Aéreo' : '🚢 Marítimo'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          {clasificaciones[i] && (
+                            <span className={`text-xs font-bold ${
+                              clasificaciones[i]!.transporte === 'Aereo' ? 'text-blue-600' : 'text-orange-600'
+                            }`}>
+                              {clasificaciones[i]!.transporte === 'Aereo' ? '~30 días' : '~90 días'}
                             </span>
                           )}
                         </td>
@@ -628,7 +715,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
             <div className="glass-card rounded-2xl p-8">
               <i className="fas fa-sync-alt text-changan-accent text-4xl animate-spin mb-4"></i>
               <h2 className="text-xl font-bold text-changan-blue mb-2">Transmitiendo Pedido</h2>
-              <p className="text-gray-500">Folio: <span className="font-mono font-bold">{folio}</span></p>
+              <p className="text-gray-500">Pedido N°: <span className="font-mono font-bold">{numeroPedido}</span></p>
             </div>
           </div>
         )}
@@ -645,8 +732,8 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
               
               <div className="bg-changan-light rounded-xl p-4 mb-6 text-left space-y-2">
                 <div className="flex justify-between">
-                  <span className="text-gray-600 text-sm">Folio:</span>
-                  <span className="font-mono font-bold text-changan-blue">{folio}</span>
+                  <span className="text-gray-600 text-sm">Pedido N°:</span>
+                  <span className="font-mono font-bold text-changan-blue">{numeroPedido}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600 text-sm">Cliente:</span>
@@ -669,6 +756,37 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                   <span className="text-green-600 font-bold">TRANSMITIDO</span>
                 </div>
               </div>
+
+              {/* Resumen de Tiempos de Entrega */}
+              {(totalAereos > 0 || totalMaritimos > 0) && (
+                <div className="mb-6 space-y-2">
+                  <p className="text-sm font-bold text-gray-700 mb-2">Tiempos Estimados de Entrega:</p>
+                  {totalAereos > 0 && (
+                    <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
+                      <i className="fas fa-plane text-blue-600"></i>
+                      <span className="text-sm text-blue-800">
+                        <strong>{totalAereos} repuesto(s) vía aérea:</strong> ~30 días
+                      </span>
+                    </div>
+                  )}
+                  {totalMaritimos > 0 && (
+                    <div className="flex items-center gap-2 p-2 bg-orange-50 rounded-lg border border-orange-200">
+                      <i className="fas fa-ship text-orange-600"></i>
+                      <span className="text-sm text-orange-800">
+                        <strong>{totalMaritimos} repuesto(s) vía marítima:</strong> ~90 días
+                      </span>
+                    </div>
+                  )}
+                  {totalAereos > 0 && totalMaritimos > 0 && (
+                    <div className="flex items-center gap-2 p-2 bg-yellow-50 rounded-lg border border-yellow-200">
+                      <i className="fas fa-info-circle text-yellow-600"></i>
+                      <span className="text-xs text-yellow-800">
+                        <strong>Pedido mixto:</strong> Los repuestos llegarán en diferentes fechas según la vía de transporte.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <button 
                 onClick={() => { setView('main'); handleNuevoPedido(); }} 
