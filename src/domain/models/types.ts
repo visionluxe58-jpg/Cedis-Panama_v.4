@@ -191,3 +191,39 @@ export interface TransmisionResponse {
   timestamp?: string;
   error?: string;
 }
+
+// ========== AGENTE DE COTIZACIONES IA ==========
+export interface ItemCotizacionExtraido {
+  codigoRepuesto: string;
+  descripcionOficial: string;
+  cantidadSolicitada: number;
+  precioUnitarioEstimado?: number;
+  confianza: number; // 0 - 100%
+  subsistema?: string;
+}
+
+export interface MetadatosCotizacion {
+  cliente?: string;
+  noCotizacion?: string;
+  placa?: string;
+  vin?: string;
+  modeloAuto?: string;
+  fechaDocumento?: string;
+}
+
+export interface ConceptoDescartado {
+  descripcion: string;
+  razon: string;
+}
+
+export interface ResultadoAnalisisCotizacion {
+  exito: boolean;
+  repuestos: ItemCotizacionExtraido[];
+  metadatos?: MetadatosCotizacion;
+  conceptosDescartados?: ConceptoDescartado[];
+  origen: 'GEMINI_VISION_API' | 'MOTOR_INTEGRADO_LOCAL';
+  confianzaPromedio: number;
+  nombreArchivo: string;
+  tiempoProcesamientoMs: number;
+  mensaje: string;
+}

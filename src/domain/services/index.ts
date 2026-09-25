@@ -180,3 +180,6 @@ export function ejecutarMatchingFIFO(
 // Re-exportar IA de reconocimiento de repuestos
 export { IAReconocimientoRepuestos, BASE_DATOS_REPUESTOS } from './iaReconocimientoRepuestos';
 export type { RepuestoChangan } from './iaReconocimientoRepuestos';
+
+// Re-exportar agente de cotizaciones IA
+export { analizarCotizacion, analizarMuestraDemo, obtenerEstadisticasServicio } from './agenteCotizaciones';

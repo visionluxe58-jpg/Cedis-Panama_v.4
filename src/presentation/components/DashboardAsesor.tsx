@@ -3,10 +3,11 @@
  */
 
 import { useState, useEffect } from 'react';
-import type { AuthState, LineaPedido, ClasificacionRepuesto } from '../../domain/models/types';
+import type { AuthState, LineaPedido, ClasificacionRepuesto, ItemCotizacionExtraido, MetadatosCotizacion } from '../../domain/models/types';
 import { nuevoFolio, transmitirPedido } from '../../data/api/client';
 import { clasificarRepuesto } from '../../domain/services';
 import { IAReconocimientoRepuestos, type RepuestoChangan } from '../../domain/services/iaReconocimientoRepuestos';
+import { ExtractorCotizacionesIA } from './ExtractorCotizacionesIA';
 
 interface DashboardAsesorProps {
   auth: AuthState;
@@ -17,7 +18,7 @@ const MODELOS_CHANGAN = ['CS15', 'CS35 Plus', 'CS55 Plus', 'CS75 Plus', 'CS95', 
 const CANALES = ['Mostrador', 'Taller', 'Chapistería', 'Bodega', 'Garantía', 'Interno'];
 
 export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
-  const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success'>('main');
+  const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success' | 'extractor'>('main');
   const [numeroPedido, setNumeroPedido] = useState('');
   const [pedidoLoading, setPedidoLoading] = useState(false);
   
@@ -223,6 +224,67 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     setView('newOrder');
   };
 
+  const handleDatosExtraidosIA = (metadatos: MetadatosCotizacion, repuestos: ItemCotizacionExtraido[]) => {
+    // Llenar datos del cliente
+    if (metadatos.cliente) setCliente(metadatos.cliente);
+    if (metadatos.vin) setVin(metadatos.vin);
+    if (metadatos.noCotizacion) setNoCotizacion(metadatos.noCotizacion);
+    if (metadatos.modeloAuto) {
+      // Intentar extraer el modelo del texto
+      const modeloDetectado = MODELOS_CHANGAN.find(m => 
+        metadatos.modeloAuto?.toUpperCase().includes(m.toUpperCase())
+      );
+      if (modeloDetectado) setModelo(modeloDetectado);
+    }
+
+    // Llenar líneas de repuestos
+    if (repuestos.length > 0) {
+      const nuevasLineas = repuestos.map(r => ({
+        codigoRepuesto: r.codigoRepuesto,
+        descripcion: r.descripcionOficial,
+        cantidad: r.cantidadSolicitada,
+        motivo: ''
+      }));
+      setLineas(nuevasLineas);
+      
+      // Inicializar clasificaciones y repuestosIA
+      setClasificaciones(nuevasLineas.map(() => null));
+      setRepuestosIA(nuevasLineas.map(() => null));
+      setSugerenciasIA(nuevasLineas.map(() => null));
+      
+      // Trigger classification for each line
+      nuevasLineas.forEach((linea, idx) => {
+        const resultadoIA = IAReconocimientoRepuestos.reconocerRepuesto(linea.codigoRepuesto);
+        if (resultadoIA.clasificacion) {
+          const newClasificaciones = [...clasificaciones];
+          newClasificaciones[idx] = {
+            transporte: resultadoIA.clasificacion.viaTransporte,
+            pesoUnitarioKg: resultadoIA.repuesto?.peso || 2,
+            largoCm: resultadoIA.repuesto?.dimensiones.largo || 30,
+            anchoCm: resultadoIA.repuesto?.dimensiones.ancho || 20,
+            altoCm: resultadoIA.repuesto?.dimensiones.alto || 15,
+            pesoVolumetricoKg: resultadoIA.repuesto ? 
+              IAReconocimientoRepuestos.calcularPesoVolumetrico(resultadoIA.repuesto.dimensiones) : 1.8,
+            categoria: resultadoIA.clasificacion.categoria as any,
+            motivo: resultadoIA.repuesto ? 
+              `Repuesto reconocido por IA - ${resultadoIA.repuesto.categoria}` : 
+              'Clasificación automática',
+            esDGR: resultadoIA.clasificacion.esDGR
+          };
+          setClasificaciones(newClasificaciones);
+        }
+        if (resultadoIA.repuesto) {
+          const newRepuestosIA = [...repuestosIA];
+          newRepuestosIA[idx] = resultadoIA.repuesto;
+          setRepuestosIA(newRepuestosIA);
+        }
+      });
+    }
+
+    // Cambiar a vista de nuevo pedido
+    setView('newOrder');
+  };
+
   const totalUnidades = lineas.reduce((sum, l) => sum + l.cantidad, 0);
   const totalAereos = clasificaciones.filter(c => c?.transporte === 'Aereo').length;
   const totalMaritimos = clasificaciones.filter(c => c?.transporte === 'Maritimo').length;
@@ -269,7 +331,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <button
                 onClick={handleNuevoPedido}
                 className="glass-card rounded-2xl p-6 text-left hover:shadow-lg transition-all group cursor-pointer border-2 border-transparent hover:border-changan-accent/30"
@@ -285,6 +347,21 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 </div>
               </button>
 
+              <button
+                onClick={() => setView('extractor')}
+                className="glass-card rounded-2xl p-6 text-left hover:shadow-lg transition-all group cursor-pointer border-2 border-transparent hover:border-purple-400/30"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-14 h-14 bg-gradient-to-br from-purple-500 to-purple-700 rounded-xl flex items-center justify-center shadow-lg">
+                    <i className="fas fa-robot text-white text-xl"></i>
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-changan-blue">Extraer de Cotización</h3>
+                    <p className="text-sm text-gray-500 mt-1">IA extrae datos de PDF/imagen</p>
+                  </div>
+                </div>
+              </button>
+
               <div className="glass-card rounded-2xl p-6 border-2 border-dashed border-gray-200">
                 <div className="flex items-start gap-4">
                   <div className="w-14 h-14 bg-gray-100 rounded-xl flex items-center justify-center">
@@ -294,6 +371,46 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                     <h3 className="text-lg font-bold text-gray-400">Historial</h3>
                     <p className="text-sm text-gray-400 mt-1">Próximamente</p>
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Vista Extractor de Cotizaciones IA */}
+        {view === 'extractor' && (
+          <div className="fade-in">
+            <div className="glass-card rounded-2xl p-4 mb-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <i className="fas fa-robot text-purple-600 text-xl"></i>
+                  <h2 className="text-xl font-bold text-changan-blue">Extractor Inteligente de Cotizaciones</h2>
+                </div>
+                <button onClick={() => setView('main')} className="text-gray-500 hover:text-gray-700">
+                  <i className="fas fa-times text-xl"></i>
+                </button>
+              </div>
+              <p className="text-sm text-gray-600 mt-2">
+                Sube una cotización en PDF o imagen y la IA extraerá automáticamente los datos del cliente y los repuestos para llenar el formulario.
+              </p>
+            </div>
+
+            <div className="glass-card rounded-2xl p-6 mb-4">
+              <ExtractorCotizacionesIA onDatosExtraidos={handleDatosExtraidosIA} />
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <i className="fas fa-info-circle text-blue-600 mt-1"></i>
+                <div className="text-sm text-blue-800">
+                  <p className="font-medium mb-1">¿Cómo funciona?</p>
+                  <ol className="list-decimal list-inside space-y-1 text-xs">
+                    <li>Sube una cotización en PDF o imagen (JPG/PNG)</li>
+                    <li>La IA analiza el documento y extrae los datos automáticamente</li>
+                    <li>Revisa los datos extraídos y haz clic en "Usar estos datos"</li>
+                    <li>El formulario se llenará automáticamente con la información extraída</li>
+                    <li>Continúa con el flujo normal de creación de pedido</li>
+                  </ol>
                 </div>
               </div>
             </div>
