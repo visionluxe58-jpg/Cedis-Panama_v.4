@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react';
 import type { AuthState, LineaPedido, ClasificacionRepuesto } from '../../domain/models/types';
 import { nuevoFolio, transmitirPedido } from '../../data/api/client';
 import { clasificarRepuesto } from '../../domain/services';
+import { IAReconocimientoRepuestos, type RepuestoChangan } from '../../domain/services/iaReconocimientoRepuestos';
 
 interface DashboardAsesorProps {
   auth: AuthState;
@@ -33,6 +34,8 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     { codigoRepuesto: '', descripcion: '', cantidad: 1, motivo: '' }
   ]);
   const [clasificaciones, setClasificaciones] = useState<(ClasificacionRepuesto | null)[]>([null]);
+  const [repuestosIA, setRepuestosIA] = useState<(RepuestoChangan | null)[]>([null]);
+  const [sugerenciasIA, setSugerenciasIA] = useState<(RepuestoChangan[] | null)[]>([null]);
   
   const [timestamp, setTimestamp] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -53,12 +56,16 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   const addLinea = () => {
     setLineas([...lineas, { codigoRepuesto: '', descripcion: '', cantidad: 1, motivo: '' }]);
     setClasificaciones([...clasificaciones, null]);
+    setRepuestosIA([...repuestosIA, null]);
+    setSugerenciasIA([...sugerenciasIA, null]);
   };
 
   const removeLinea = (idx: number) => {
     if (lineas.length <= 1) return;
     setLineas(lineas.filter((_, i) => i !== idx));
     setClasificaciones(clasificaciones.filter((_, i) => i !== idx));
+    setRepuestosIA(repuestosIA.filter((_, i) => i !== idx));
+    setSugerenciasIA(sugerenciasIA.filter((_, i) => i !== idx));
   };
 
   const updateLinea = (idx: number, field: keyof LineaPedido, value: string | number) => {
@@ -66,17 +73,87 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     updated[idx] = { ...updated[idx], [field]: value };
     setLineas(updated);
 
-    // Clasificación automática
+    // Clasificación automática con IA
     if (field === 'codigoRepuesto' || field === 'descripcion') {
       const codigo = field === 'codigoRepuesto' ? String(value) : updated[idx].codigoRepuesto;
       const descripcion = field === 'descripcion' ? String(value) : updated[idx].descripcion;
+      
       if (codigo || descripcion) {
-        const clasif = clasificarRepuesto(codigo, descripcion);
+        // Usar IA para reconocimiento
+        const resultadoIA = IAReconocimientoRepuestos.reconocerRepuesto(codigo || descripcion);
+        
+        // Actualizar clasificación
         const newClasificaciones = [...clasificaciones];
-        newClasificaciones[idx] = clasif;
+        if (resultadoIA.clasificacion) {
+          newClasificaciones[idx] = {
+            transporte: resultadoIA.clasificacion.viaTransporte,
+            pesoUnitarioKg: resultadoIA.repuesto?.peso || 2,
+            largoCm: resultadoIA.repuesto?.dimensiones.largo || 30,
+            anchoCm: resultadoIA.repuesto?.dimensiones.ancho || 20,
+            altoCm: resultadoIA.repuesto?.dimensiones.alto || 15,
+            pesoVolumetricoKg: resultadoIA.repuesto ? 
+              IAReconocimientoRepuestos.calcularPesoVolumetrico(resultadoIA.repuesto.dimensiones) : 1.8,
+            categoria: resultadoIA.clasificacion.categoria as any,
+            motivo: resultadoIA.repuesto ? 
+              `Repuesto reconocido por IA - ${resultadoIA.repuesto.categoria}` : 
+              'Clasificación automática',
+            esDGR: resultadoIA.clasificacion.esDGR
+          };
+        }
         setClasificaciones(newClasificaciones);
+
+        // Actualizar repuesto reconocido
+        const newRepuestosIA = [...repuestosIA];
+        newRepuestosIA[idx] = resultadoIA.repuesto || null;
+        setRepuestosIA(newRepuestosIA);
+
+        // Actualizar sugerencias
+        const newSugerenciasIA = [...sugerenciasIA];
+        newSugerenciasIA[idx] = resultadoIA.sugerencias || null;
+        setSugerenciasIA(newSugerenciasIA);
+
+        // Auto-completar descripción si se encontró el repuesto
+        if (resultadoIA.repuesto && field === 'codigoRepuesto' && !updated[idx].descripcion) {
+          updated[idx].descripcion = resultadoIA.repuesto.descripcion;
+          setLineas([...updated]);
+        }
       }
     }
+  };
+
+  const seleccionarSugerenciaIA = (idx: number, repuesto: RepuestoChangan) => {
+    const updated = [...lineas];
+    updated[idx] = {
+      ...updated[idx],
+      codigoRepuesto: repuesto.codigo,
+      descripcion: repuesto.descripcion
+    };
+    setLineas(updated);
+
+    // Actualizar clasificación
+    const newClasificaciones = [...clasificaciones];
+    newClasificaciones[idx] = {
+      transporte: IAReconocimientoRepuestos.determinarViaTransporte(repuesto),
+      pesoUnitarioKg: repuesto.peso,
+      largoCm: repuesto.dimensiones.largo,
+      anchoCm: repuesto.dimensiones.ancho,
+      altoCm: repuesto.dimensiones.alto,
+      pesoVolumetricoKg: IAReconocimientoRepuestos.calcularPesoVolumetrico(repuesto.dimensiones),
+      categoria: repuesto.categoria as any,
+      motivo: `Repuesto reconocido por IA - ${repuesto.categoria}`,
+      esDGR: repuesto.esDGR
+    };
+    setClasificaciones(newClasificaciones);
+
+    // Actualizar repuesto
+    const newRepuestosIA = [...repuestosIA];
+    newRepuestosIA[idx] = repuesto;
+    setRepuestosIA(newRepuestosIA);
+
+    // Limpiar sugerencias
+    const newSugerenciasIA = [...sugerenciasIA];
+    newSugerenciasIA[idx] = null;
+    setSugerenciasIA(newSugerenciasIA);
   };
 
   const validarFormulario = (): boolean => {
@@ -140,6 +217,8 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     setObservaciones('');
     setLineas([{ codigoRepuesto: '', descripcion: '', cantidad: 1, motivo: '' }]);
     setClasificaciones([null]);
+    setRepuestosIA([null]);
+    setSugerenciasIA([null]);
     setErrors({});
     setView('newOrder');
   };
@@ -344,75 +423,11 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 <h3 className="text-lg font-bold text-changan-blue flex items-center gap-2">
                   <i className="fas fa-cogs text-changan-accent"></i>
                   Líneas de Repuestos
+                  <span className="text-xs bg-changan-light text-changan-accent px-2 py-1 rounded-full">
+                    <i className="fas fa-robot mr-1"></i>IA Activa
+                  </span>
                 </h3>
-                <button 
-                  onClick={addLinea} 
-                  className="px-4 py-2 bg-changan-accent hover:bg-changan-blue text-white rounded-lg text-sm transition-colors"
-                >
-                  <i className="fas fa-plus mr-1"></i> Agregar Línea
-                </button>
               </div>
-
-              {/* Resumen de Clasificación con Tiempos Estimados */}
-              {clasificaciones.some(c => c !== null) && (
-                <div className="mb-4 p-4 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl border border-gray-200">
-                  <div className="flex items-center gap-2 mb-3">
-                    <i className="fas fa-route text-changan-accent"></i>
-                    <h4 className="text-sm font-bold text-gray-800">Clasificación Logística Automática</h4>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    {/* VÍA AÉREA */}
-                    <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
-                          <i className="fas fa-plane text-white text-sm"></i>
-                        </div>
-                        <div>
-                          <span className="text-xs font-bold text-blue-800 block">VÍA AÉREA</span>
-                          <span className="text-[10px] text-blue-600">Express</span>
-                        </div>
-                      </div>
-                      <p className="text-2xl font-bold text-blue-700 mb-1">{totalAereos}</p>
-                      <p className="text-xs text-blue-600 mb-2">repuesto(s)</p>
-                      <div className="bg-blue-100 rounded px-2 py-1 flex items-center gap-1">
-                        <i className="fas fa-clock text-blue-600 text-xs"></i>
-                        <span className="text-xs font-bold text-blue-700">~30 días</span>
-                      </div>
-                    </div>
-
-                    {/* VÍA MARÍTIMA */}
-                    <div className="bg-orange-50 rounded-lg p-3 border border-orange-200">
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center">
-                          <i className="fas fa-ship text-white text-sm"></i>
-                        </div>
-                        <div>
-                          <span className="text-xs font-bold text-orange-800 block">VÍA MARÍTIMA</span>
-                          <span className="text-[10px] text-orange-600">Contenedor</span>
-                        </div>
-                      </div>
-                      <p className="text-2xl font-bold text-orange-700 mb-1">{totalMaritimos}</p>
-                      <p className="text-xs text-orange-600 mb-2">repuesto(s)</p>
-                      <div className="bg-orange-100 rounded px-2 py-1 flex items-center gap-1">
-                        <i className="fas fa-clock text-orange-600 text-xs"></i>
-                        <span className="text-xs font-bold text-orange-700">~90 días</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Tiempo Estimado Total */}
-                  {totalAereos > 0 && totalMaritimos > 0 && (
-                    <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
-                      <div className="flex items-center gap-2">
-                        <i className="fas fa-info-circle text-yellow-600"></i>
-                        <p className="text-xs text-yellow-800">
-                          <strong>Pedido mixto:</strong> Los repuestos aéreos llegarán en ~30 días y los marítimos en ~90 días.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
 
               <div className="space-y-4">
                 {lineas.map((linea, idx) => (
@@ -481,71 +496,118 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                       </div>
                     </div>
 
-                    {/* Clasificación Visual con Tiempo Estimado */}
+                    {/* Clasificación Compacta con IA */}
                     {clasificaciones[idx] && (
-                      <div className={`mt-3 p-3 rounded-lg border-l-4 ${
-                        clasificaciones[idx]!.transporte === 'Aereo' 
-                          ? 'bg-blue-50 border-blue-500' 
-                          : 'bg-orange-50 border-orange-500'
-                      }`}>
-                        <div className="flex items-start gap-3">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
-                            clasificaciones[idx]!.transporte === 'Aereo' 
-                              ? 'bg-blue-500' 
-                              : 'bg-orange-500'
-                          }`}>
-                            <i className={`fas ${
-                              clasificaciones[idx]!.transporte === 'Aereo' 
-                                ? 'fa-plane text-white' 
-                                : 'fa-ship text-white'
-                            }`}></i>
-                          </div>
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 flex-wrap mb-1">
-                              <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                                clasificaciones[idx]!.transporte === 'Aereo' 
-                                  ? 'bg-blue-100 text-blue-800' 
-                                  : 'bg-orange-100 text-orange-800'
-                              }`}>
-                                {clasificaciones[idx]!.transporte === 'Aereo' ? '✈ VÍA AÉREA' : '🚢 VÍA MARÍTIMA'}
-                              </span>
-                              <span className="text-xs font-medium text-gray-700">
-                                {clasificaciones[idx]!.categoria}
-                              </span>
-                              {clasificaciones[idx]!.esDGR && (
-                                <span className="text-xs font-bold px-2 py-0.5 rounded bg-red-100 text-red-800">
-                                  ⚠️ DGR
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs text-gray-600 mb-2">
-                              {clasificaciones[idx]!.motivo}
-                            </p>
-                            <div className={`inline-flex items-center gap-1 px-2 py-1 rounded ${
-                              clasificaciones[idx]!.transporte === 'Aereo' 
-                                ? 'bg-blue-100' 
-                                : 'bg-orange-100'
-                            }`}>
-                              <i className={`fas fa-clock text-xs ${
-                                clasificaciones[idx]!.transporte === 'Aereo' 
-                                  ? 'text-blue-600' 
-                                  : 'text-orange-600'
-                              }`}></i>
-                              <span className={`text-xs font-bold ${
-                                clasificaciones[idx]!.transporte === 'Aereo' 
-                                  ? 'text-blue-700' 
-                                  : 'text-orange-700'
-                              }`}>
-                                Tiempo estimado: {clasificaciones[idx]!.transporte === 'Aereo' ? '~30 días' : '~90 días'}
-                              </span>
-                            </div>
-                          </div>
+                      <div className="mt-3 flex items-center gap-2 flex-wrap">
+                        {/* Badge de Vía */}
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold ${
+                          clasificaciones[idx]!.transporte === 'Aereo' 
+                            ? 'bg-blue-100 text-blue-800 border border-blue-300' 
+                            : 'bg-orange-100 text-orange-800 border border-orange-300'
+                        }`}>
+                          {clasificaciones[idx]!.transporte === 'Aereo' ? '✈' : '🚢'}
+                          {clasificaciones[idx]!.transporte === 'Aereo' ? '~30 días' : '~90 días'}
+                        </span>
+
+                        {/* Badge de Categoría */}
+                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                          <i className="fas fa-tag text-[10px]"></i>
+                          {clasificaciones[idx]!.categoria}
+                        </span>
+
+                        {/* Badge DGR si aplica */}
+                        {clasificaciones[idx]!.esDGR && (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 border border-red-300">
+                            ⚠️ DGR
+                          </span>
+                        )}
+
+                        {/* Información de IA */}
+                        {repuestosIA[idx] && (
+                          <>
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-purple-50 text-purple-700 border border-purple-200">
+                              <i className="fas fa-weight-hanging text-[10px]"></i>
+                              {repuestosIA[idx]!.peso} kg
+                            </span>
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-purple-50 text-purple-700 border border-purple-200">
+                              <i className="fas fa-ruler text-[10px]"></i>
+                              {repuestosIA[idx]!.dimensiones.largo}×{repuestosIA[idx]!.dimensiones.ancho}×{repuestosIA[idx]!.dimensiones.alto} cm
+                            </span>
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-green-50 text-green-700 border border-green-200">
+                              <i className="fas fa-dollar-sign text-[10px]"></i>
+                              ${repuestosIA[idx]!.precioEstimado}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Sugerencias de IA */}
+                    {sugerenciasIA[idx] && sugerenciasIA[idx]!.length > 0 && (
+                      <div className="mt-3 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                        <div className="flex items-center gap-2 mb-2">
+                          <i className="fas fa-robot text-purple-600"></i>
+                          <span className="text-xs font-bold text-purple-800">Sugerencias de IA:</span>
+                        </div>
+                        <div className="space-y-2">
+                          {sugerenciasIA[idx]!.map((sug, sugIdx) => (
+                            <button
+                              key={sugIdx}
+                              onClick={() => seleccionarSugerenciaIA(idx, sug)}
+                              className="w-full text-left p-2 bg-white hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs font-mono font-bold text-purple-900">{sug.codigo}</p>
+                                  <p className="text-xs text-gray-600">{sug.descripcion}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-xs font-bold text-green-600">${sug.precioEstimado}</p>
+                                  <p className="text-[10px] text-gray-500">{sug.peso} kg</p>
+                                </div>
+                              </div>
+                            </button>
+                          ))}
                         </div>
                       </div>
                     )}
                   </div>
                 ))}
+
+                {/* Botón Agregar Línea - AL FINAL */}
+                <button 
+                  onClick={addLinea} 
+                  className="w-full py-3 border-2 border-dashed border-changan-accent/30 hover:border-changan-accent text-changan-accent hover:bg-changan-light rounded-xl text-sm font-medium transition-all flex items-center justify-center gap-2"
+                >
+                  <i className="fas fa-plus"></i>
+                  Agregar Línea de Repuesto
+                </button>
               </div>
+
+              {/* Resumen de Clasificación con Tiempos Estimados - COMPACTO */}
+              {clasificaciones.some(c => c !== null) && (
+                <div className="mt-4 p-3 bg-gradient-to-r from-gray-50 to-gray-100 rounded-lg border border-gray-200">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-blue-800">✈ Aéreo:</span>
+                        <span className="text-sm font-bold text-blue-700">{totalAereos}</span>
+                        <span className="text-xs text-blue-600">(~30 días)</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-orange-800">🚢 Marítimo:</span>
+                        <span className="text-sm font-bold text-orange-700">{totalMaritimos}</span>
+                        <span className="text-xs text-orange-600">(~90 días)</span>
+                      </div>
+                    </div>
+                    {totalAereos > 0 && totalMaritimos > 0 && (
+                      <span className="text-xs text-yellow-700 bg-yellow-100 px-2 py-1 rounded">
+                        ℹ Pedido mixto
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Botones de Acción */}
