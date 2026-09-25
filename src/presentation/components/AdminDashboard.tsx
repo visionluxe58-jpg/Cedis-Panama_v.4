@@ -6,6 +6,7 @@ import { useState } from 'react';
 import type { AuthState, DPLDetalle, DPLManifiesto, FilaRastreador } from '../../domain/models/types';
 import { ModalRastreadorUniversal } from './ModalRastreadorUniversal';
 import { calcularKPIs, ejecutarMatchingFIFO } from '../../domain/services';
+import { CruceDPL } from './CruceDPL';
 
 interface AdminDashboardProps {
   auth: AuthState;
@@ -38,7 +39,8 @@ const DEMO_FILAS: FilaRastreador[] = [
 export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) {
   const [modalRastreadorAbierto, setModalRastreadorAbierto] = useState(false);
   const [codigoInicial, setCodigoInicial] = useState('');
-  const [vistaActiva, setVistaActiva] = useState<'dashboard' | 'kpis' | 'matching'>('dashboard');
+  const [vistaActiva, setVistaActiva] = useState<'dashboard' | 'kpis' | 'matching' | 'cruceDPL'>('dashboard');
+  const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
 
   const handleAbrirRastreador = (codigo?: string) => {
     setCodigoInicial(codigo || '');
@@ -107,6 +109,14 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
             }`}
           >
             <i className="fas fa-random mr-2"></i>Matching FIFO
+          </button>
+          <button
+            onClick={() => setVistaActiva('cruceDPL')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              vistaActiva === 'cruceDPL' ? 'bg-red-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <i className="fas fa-ship mr-2"></i>Gestión DPL
           </button>
         </div>
 
@@ -406,6 +416,24 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                   </table>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Vista Gestión DPL */}
+        {vistaActiva === 'cruceDPL' && (
+          <div className="fade-in">
+            <div className="bg-slate-950 rounded-2xl p-6">
+              <CruceDPL
+                usuario={{
+                  id: auth.id,
+                  nombre: auth.nombre,
+                  rol: 'ADMINISTRADOR_CEDIS',
+                  sucursal: auth.sucursal
+                }}
+                onAbrirModalDPL={() => setModalDPLAbierto(true)}
+                onAbrirRastreador={handleAbrirRastreador}
+              />
             </div>
           </div>
         )}

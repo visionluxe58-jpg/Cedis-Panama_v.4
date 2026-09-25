@@ -227,3 +227,39 @@ export interface ResultadoAnalisisCotizacion {
   tiempoProcesamientoMs: number;
   mensaje: string;
 }
+
+// ========== GESTIÓN DE CONTENEDORES DPL ==========
+export interface ContenedorManifiesto {
+  contenedor: string;
+  proveedor: string;
+  fechaArribo: string;
+  poReferencia: string;
+  tipoTransporte: string;
+  totalPiezas: number;
+  skusUnicos: number;
+  totalPallets: number;
+  estado: EstatusDPL;
+  creadoPor: string;
+  creadoEn: string;
+  blReferencia?: string;
+}
+
+export interface DetalleDPL {
+  uid: string;
+  contenedor: string;
+  pallet: string;
+  codigoCompra: string;
+  codigoSuministrado?: string;
+  descripcion: string;
+  cantidadTotal: number;
+  cantidadAsignada: number;
+  saldoDisponible: number;
+  ubicacionCedis?: string;
+}
+
+export interface UsuarioActivo {
+  id: string;
+  nombre: string;
+  rol: 'ADMINISTRADOR_CEDIS' | 'ASESOR';
+  sucursal?: string;
+}

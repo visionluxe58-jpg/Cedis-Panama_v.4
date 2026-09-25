@@ -183,3 +183,6 @@ export type { RepuestoChangan } from './iaReconocimientoRepuestos';
 
 // Re-exportar agente de cotizaciones IA
 export { analizarCotizacion, analizarMuestraDemo, obtenerEstadisticasServicio } from './agenteCotizaciones';
+
+// Re-exportar gestión DPL
+export * from './gestionDPL';
