@@ -1,0 +1,423 @@
+/* Optimizaciones específicas para dispositivos móviles */
+
+/* ===== BREAKPOINTS ===== */
+/* Mobile: < 640px */
+/* Tablet: 640px - 1024px */
+/* Desktop: > 1024px */
+
+/* ===== MOBILE FIRST ADJUSTMENTS ===== */
+@media (max-width: 640px) {
+  /* Reducir padding general */
+  .max-w-7xl {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  /* Header más compacto */
+  header {
+    padding: 0.75rem !important;
+  }
+
+  header h1 {
+    font-size: 1rem !important;
+  }
+
+  header p {
+    font-size: 0.75rem !important;
+  }
+
+  /* Cards más compactas */
+  .glass-card {
+    padding: 1rem !important;
+    margin-bottom: 1rem !important;
+  }
+
+  /* Formularios */
+  input, select, textarea {
+    font-size: 16px !important; /* Previene zoom en iOS */
+    padding: 0.75rem !important;
+  }
+
+  label {
+    font-size: 0.875rem !important;
+    margin-bottom: 0.5rem !important;
+  }
+
+  /* Grid layouts */
+  .grid-cols-2 {
+    grid-template-columns: 1fr !important;
+  }
+
+  .md\:grid-cols-2,
+  .md\:grid-cols-3,
+  .md\:grid-cols-4 {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Tablas responsive */
+  table {
+    font-size: 0.75rem !important;
+  }
+
+  th, td {
+    padding: 0.5rem !important;
+  }
+
+  /* Ocultar columnas menos importantes en móvil */
+  table th:nth-child(n+5),
+  table td:nth-child(n+5) {
+    display: none;
+  }
+
+  /* Botones más grandes para touch */
+  button {
+    min-height: 44px !important; /* Apple HIG */
+    padding: 0.75rem 1rem !important;
+  }
+
+  /* Textos más legibles */
+  h2 {
+    font-size: 1.25rem !important;
+  }
+
+  h3 {
+    font-size: 1.125rem !important;
+  }
+
+  p {
+    font-size: 0.875rem !important;
+    line-height: 1.5 !important;
+  }
+
+  /* Modales a pantalla completa */
+  .modal-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Dashboard Asesor */
+  .dashboard-stats {
+    grid-template-columns: 1fr !important;
+    gap: 0.75rem !important;
+  }
+
+  .stat-card {
+    padding: 1rem !important;
+  }
+
+  .stat-value {
+    font-size: 1.5rem !important;
+  }
+
+  .stat-label {
+    font-size: 0.75rem !important;
+  }
+
+  /* Formularios de pedido */
+  .form-section {
+    margin-bottom: 1.5rem !important;
+  }
+
+  .form-group {
+    margin-bottom: 1rem !important;
+  }
+
+  /* Líneas de repuestos */
+  .linea-repuesto {
+    padding: 1rem !important;
+    margin-bottom: 1rem !important;
+  }
+
+  .linea-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 0.5rem !important;
+  }
+
+  .linea-fields {
+    grid-template-columns: 1fr !important;
+    gap: 0.75rem !important;
+  }
+
+  /* Admin Dashboard */
+  .admin-nav {
+    flex-direction: column !important;
+    gap: 0.5rem !important;
+  }
+
+  .admin-nav button {
+    width: 100% !important;
+  }
+
+  /* Cruce DPL */
+  .cruce-dpl-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .contenedor-list {
+    max-height: 300px !important;
+  }
+
+  .contenedor-card {
+    padding: 1rem !important;
+  }
+
+  .contenedor-details {
+    padding: 1rem !important;
+  }
+
+  /* KPIs */
+  .kpi-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 0.75rem !important;
+  }
+
+  .kpi-card {
+    padding: 1rem !important;
+  }
+
+  .kpi-value {
+    font-size: 1.5rem !important;
+  }
+
+  .kpi-label {
+    font-size: 0.75rem !important;
+  }
+
+  /* Matching FIFO */
+  .matching-stats {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  .matching-table {
+    font-size: 0.7rem !important;
+  }
+
+  /* Rastreador Universal */
+  .rastreador-search {
+    flex-direction: column !important;
+  }
+
+  .rastreador-results {
+    font-size: 0.75rem !important;
+  }
+
+  /* Smart SAP Extractor */
+  .sap-extractor-upload {
+    padding: 2rem 1rem !important;
+  }
+
+  .sap-extractor-preview {
+    font-size: 0.75rem !important;
+  }
+
+  .sap-extractor-table {
+    font-size: 0.7rem !important;
+  }
+
+  /* PDF Preview */
+  .pdf-preview-container {
+    padding: 0.5rem !important;
+  }
+
+  .pdf-preview-content {
+    transform: scale(0.7) !important;
+    transform-origin: top center !important;
+  }
+
+  /* Bottom Navigation (si existe) */
+  .bottom-nav {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    background: white !important;
+    border-top: 1px solid #e5e7eb !important;
+    padding: 0.5rem !important;
+    z-index: 1000 !important;
+  }
+
+  /* Espaciado para bottom nav */
+  main {
+    padding-bottom: 4rem !important;
+  }
+
+  /* Alertas y mensajes */
+  .alert-message {
+    padding: 1rem !important;
+    font-size: 0.875rem !important;
+  }
+
+  /* Loading states */
+  .loading-spinner {
+    width: 2rem !important;
+    height: 2rem !important;
+  }
+
+  /* Empty states */
+  .empty-state {
+    padding: 2rem 1rem !important;
+    text-align: center !important;
+  }
+
+  .empty-state-icon {
+    font-size: 3rem !important;
+    margin-bottom: 1rem !important;
+  }
+
+  /* Scroll horizontal para tablas */
+  .table-container {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  /* Touch-friendly targets */
+  .touch-target {
+    min-width: 44px !important;
+    min-height: 44px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  /* Reducir animaciones en móvil para mejor rendimiento */
+  * {
+    animation-duration: 0.2s !important;
+    transition-duration: 0.2s !important;
+  }
+
+  /* Optimizar imágenes */
+  img {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+
+  /* Prevenir desbordamiento horizontal */
+  body {
+    overflow-x: hidden !important;
+  }
+
+  /* Safe area para notch/home indicator */
+  @supports (padding: max(0px)) {
+    body {
+      padding-left: env(safe-area-inset-left) !important;
+      padding-right: env(safe-area-inset-right) !important;
+      padding-bottom: env(safe-area-inset-bottom) !important;
+    }
+  }
+}
+
+/* ===== TABLET ADJUSTMENTS ===== */
+@media (min-width: 641px) and (max-width: 1024px) {
+  /* Grid layouts para tablet */
+  .md\:grid-cols-3 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  .md\:grid-cols-4 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  /* Tablas más compactas */
+  table {
+    font-size: 0.875rem !important;
+  }
+
+  th, td {
+    padding: 0.75rem !important;
+  }
+
+  /* Modales más pequeños */
+  .modal-content {
+    width: 90% !important;
+    max-width: 600px !important;
+  }
+}
+
+/* ===== DARK MODE MOBILE ===== */
+@media (max-width: 640px) {
+  .bg-slate-950,
+  .bg-slate-900 {
+    background-color: #0f172a !important;
+  }
+
+  .text-slate-100,
+  .text-white {
+    color: #f1f5f9 !important;
+  }
+
+  /* Bordes más sutiles en móvil */
+  .border-slate-800 {
+    border-color: #1e293b !important;
+  }
+}
+
+/* ===== LANDSCAPE MOBILE ===== */
+@media (max-width: 640px) and (orientation: landscape) {
+  /* Ajustar para modo horizontal */
+  header {
+    padding: 0.5rem !important;
+  }
+
+  .glass-card {
+    padding: 0.75rem !important;
+  }
+
+  /* Modales más compactos en landscape */
+  .modal-content {
+    height: 90vh !important;
+    max-height: 90vh !important;
+  }
+}
+
+/* ===== HIGH DPI DISPLAYS ===== */
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  /* Optimizar para pantallas retina */
+  body {
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+  }
+}
+
+/* ===== PRINT STYLES ===== */
+@media print {
+  /* Ocultar elementos de navegación */
+  header,
+  nav,
+  .bottom-nav,
+  button {
+    display: none !important;
+  }
+
+  /* Optimizar para impresión */
+  body {
+    font-size: 12pt !important;
+  }
+
+  .glass-card {
+    box-shadow: none !important;
+    border: 1px solid #000 !important;
+  }
+}
+
+/* ===== ACCESSIBILITY ===== */
+@media (prefers-reduced-motion: reduce) {
+  /* Reducir animaciones para usuarios con preferencias de accesibilidad */
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ===== DARK MODE PREFERENCE ===== */
+@media (prefers-color-scheme: dark) {
+  /* Respetar preferencia del sistema */
+  :root {
+    color-scheme: dark !important;
+  }
+}
