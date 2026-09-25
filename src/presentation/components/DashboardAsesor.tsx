@@ -8,6 +8,7 @@ import { nuevoFolio, transmitirPedido } from '../../data/api/client';
 import { clasificarRepuesto } from '../../domain/services';
 import { IAReconocimientoRepuestos, type RepuestoChangan } from '../../domain/services/iaReconocimientoRepuestos';
 import { SmartSAPPdfExtractorModal } from './SmartSAPPdfExtractorModal';
+import { generarPDFPedido } from '../../infrastructure/pdf/pdfGenerator';
 
 interface DashboardAsesorProps {
   auth: AuthState;
@@ -48,6 +49,30 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   useEffect(() => {
     if (view === 'newOrder' && !numeroPedido) {
       generarNumeroPedido();
+    }
+    
+    // Descargar PDF automáticamente al llegar a la vista de éxito
+    if (view === 'success' && numeroPedido && timestamp) {
+      const datosPDF = {
+        numeroPedido,
+        canal,
+        sucursal: auth.sucursal || '',
+        colaborador: auth.nombre,
+        cliente,
+        modelo,
+        vin,
+        placa,
+        noCotizacion,
+        observaciones,
+        lineas,
+        clasificaciones,
+        timestamp
+      };
+      
+      // Esperar un momento para que la vista se renderice
+      setTimeout(() => {
+        generarPDFPedido(datosPDF);
+      }, 500);
     }
   }, [view]);
 
@@ -982,7 +1007,13 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 <i className="fas fa-check-circle text-green-600 text-4xl"></i>
               </div>
               <h2 className="text-2xl font-bold text-changan-blue mb-2">¡Pedido Transmitido!</h2>
-              <p className="text-gray-500 mb-6">El pedido ha sido registrado exitosamente.</p>
+              <p className="text-gray-500 mb-2">El pedido ha sido registrado exitosamente.</p>
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-6 flex items-center gap-2">
+                <i className="fas fa-file-pdf text-red-600"></i>
+                <p className="text-sm text-green-800">
+                  <strong>PDF generado automáticamente</strong> — Revisa tu carpeta de descargas
+                </p>
+              </div>
               
               <div className="bg-changan-light rounded-xl p-4 mb-6 text-left space-y-2">
                 <div className="flex justify-between">
@@ -1053,6 +1084,32 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                   )}
                 </div>
               )}
+
+              {/* Botón para re-descargar PDF */}
+              <button 
+                onClick={() => {
+                  const datosPDF = {
+                    numeroPedido,
+                    canal,
+                    sucursal: auth.sucursal || '',
+                    colaborador: auth.nombre,
+                    cliente,
+                    modelo,
+                    vin,
+                    placa,
+                    noCotizacion,
+                    observaciones,
+                    lineas,
+                    clasificaciones,
+                    timestamp
+                  };
+                  generarPDFPedido(datosPDF);
+                }}
+                className="w-full mb-3 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                <i className="fas fa-file-pdf"></i>
+                Descargar PDF Nuevamente
+              </button>
 
               <button 
                 onClick={() => { setView('main'); handleNuevoPedido(); }} 
