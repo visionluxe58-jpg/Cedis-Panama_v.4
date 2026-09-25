@@ -289,6 +289,36 @@ export function generarPDFPedido(datos: DatosPedidoPDF): void {
 
   yPos += 20;
 
+  // ═══ OBSERVACIONES IMPORTANTES ═══
+  doc.setFillColor(255, 243, 224);
+  doc.setDrawColor(255, 152, 0);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(margin, yPos, contentWidth, 28, 2, 2, 'FD');
+
+  doc.setTextColor(230, 81, 0);
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'bold');
+  doc.text('OBSERVACIONES IMPORTANTES:', margin + 4, yPos + 5);
+
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(100, 50, 0);
+  
+  doc.text('1. TIEMPOS DE ENTREGA ESTIMADOS:', margin + 4, yPos + 11);
+  doc.setFont('helvetica', 'bold');
+  doc.text('   - Via Aerea: aproximadamente 30 dias', margin + 4, yPos + 16);
+  doc.text('   - Via Maritima: aproximadamente 90 dias', margin + 4, yPos + 21);
+
+  doc.setFont('helvetica', 'normal');
+  doc.text('2. CONFIDENCIALIDAD:', margin + 100, yPos + 11);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(180, 0, 0);
+  doc.text('   Este documento es de USO INTERNO unicamente.', margin + 100, yPos + 16);
+  doc.text('   NO es un documento legal.', margin + 100, yPos + 21);
+  doc.text('   NO debe ser compartido con clientes.', margin + 100, yPos + 26);
+
+  yPos += 34;
+
   // ═══ FOOTER ═══
   doc.setDrawColor(...COLORS.grayLight);
   doc.setLineWidth(0.3);
