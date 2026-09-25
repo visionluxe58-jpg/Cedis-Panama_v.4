@@ -22,12 +22,15 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
   const [numeroPedido, setNumeroPedido] = useState('');
   const [pedidoLoading, setPedidoLoading] = useState(false);
   const [modalExtractorAbierto, setModalExtractorAbierto] = useState(false);
+  const [pasoActual, setPasoActual] = useState(1);
+  const [mensajeAlerta, setMensajeAlerta] = useState<{ tipo: 'success' | 'error' | 'info' | 'warning'; texto: string } | null>(null);
   
   // Datos del pedido
   const [canal, setCanal] = useState('');
   const [cliente, setCliente] = useState('');
   const [modelo, setModelo] = useState('');
   const [vin, setVin] = useState('');
+  const [placa, setPlaca] = useState('');
   const [noCotizacion, setNoCotizacion] = useState('');
   const [observaciones, setObservaciones] = useState('');
   
@@ -186,6 +189,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
 
   const handleContinuar = () => {
     if (validarFormulario()) {
+      setPasoActual(3);
       setView('confirm');
     }
   };
@@ -215,6 +219,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     setCliente('');
     setModelo('');
     setVin('');
+    setPlaca('');
     setNoCotizacion('');
     setObservaciones('');
     setLineas([{ codigoRepuesto: '', descripcion: '', cantidad: 1, motivo: '' }]);
@@ -222,6 +227,8 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     setRepuestosIA([null]);
     setSugerenciasIA([null]);
     setErrors({});
+    setPasoActual(1);
+    setMensajeAlerta(null);
     setView('newOrder');
   };
 
@@ -240,6 +247,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
     // Llenar datos del cliente
     if (datos.cliente) setCliente(datos.cliente);
     if (datos.vin) setVin(datos.vin);
+    if (datos.placa) setPlaca(datos.placa);
     if (datos.cotizacion) setNoCotizacion(datos.cotizacion);
     if (datos.modeloAuto) {
       // Intentar extraer el modelo del texto
@@ -249,52 +257,72 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
       if (modeloDetectado) setModelo(modeloDetectado);
     }
 
-    // Llenar líneas de repuestos
-    if (datos.items.length > 0) {
-      const nuevasLineas = datos.items.map(r => ({
-        codigoRepuesto: r.codigoRepuesto,
-        descripcion: r.descripcionOficial,
-        cantidad: r.cantidadSolicitada,
-        motivo: ''
-      }));
-      setLineas(nuevasLineas);
-      
-      // Inicializar clasificaciones y repuestosIA
-      setClasificaciones(nuevasLineas.map(() => null));
-      setRepuestosIA(nuevasLineas.map(() => null));
-      setSugerenciasIA(nuevasLineas.map(() => null));
-      
-      // Trigger classification for each line
-      nuevasLineas.forEach((linea, idx) => {
-        const resultadoIA = IAReconocimientoRepuestos.reconocerRepuesto(linea.codigoRepuesto);
-        if (resultadoIA.clasificacion) {
-          const newClasificaciones = [...clasificaciones];
-          newClasificaciones[idx] = {
-            transporte: resultadoIA.clasificacion.viaTransporte,
-            pesoUnitarioKg: resultadoIA.repuesto?.peso || 2,
-            largoCm: resultadoIA.repuesto?.dimensiones.largo || 30,
-            anchoCm: resultadoIA.repuesto?.dimensiones.ancho || 20,
-            altoCm: resultadoIA.repuesto?.dimensiones.alto || 15,
-            pesoVolumetricoKg: resultadoIA.repuesto ? 
-              IAReconocimientoRepuestos.calcularPesoVolumetrico(resultadoIA.repuesto.dimensiones) : 1.8,
-            categoria: resultadoIA.clasificacion.categoria as any,
-            motivo: resultadoIA.repuesto ? 
-              `Repuesto reconocido por IA - ${resultadoIA.repuesto.categoria}` : 
-              'Clasificación automática',
-            esDGR: resultadoIA.clasificacion.esDGR
-          };
-          setClasificaciones(newClasificaciones);
-        }
-        if (resultadoIA.repuesto) {
-          const newRepuestosIA = [...repuestosIA];
-          newRepuestosIA[idx] = resultadoIA.repuesto;
-          setRepuestosIA(newRepuestosIA);
-        }
+    // Llenar líneas de repuestos (evitando duplicados)
+    if (datos.items && datos.items.length > 0) {
+      setLineas(prev => {
+        const codigosExistentes = new Set(prev.map(p => p.codigoRepuesto.toUpperCase()));
+        const nuevos = datos.items.filter(it => !codigosExistentes.has(it.codigoRepuesto.toUpperCase()));
+        
+        const nuevasLineas = nuevos.map(r => ({
+          codigoRepuesto: r.codigoRepuesto,
+          descripcion: r.descripcionOficial,
+          cantidad: r.cantidadSolicitada,
+          motivo: ''
+        }));
+        
+        const todasLasLineas = [...prev, ...nuevasLineas];
+        
+        // Inicializar clasificaciones y repuestosIA para las nuevas líneas
+        setClasificaciones(prev => [...prev, ...nuevasLineas.map(() => null)]);
+        setRepuestosIA(prev => [...prev, ...nuevasLineas.map(() => null)]);
+        setSugerenciasIA(prev => [...prev, ...nuevasLineas.map(() => null)]);
+        
+        // Trigger classification for each new line
+        nuevasLineas.forEach((linea, idx) => {
+          const resultadoIA = IAReconocimientoRepuestos.reconocerRepuesto(linea.codigoRepuesto);
+          if (resultadoIA.clasificacion) {
+            const newClasificaciones = [...clasificaciones];
+            const realIdx = prev.length + idx;
+            newClasificaciones[realIdx] = {
+              transporte: resultadoIA.clasificacion.viaTransporte,
+              pesoUnitarioKg: resultadoIA.repuesto?.peso || 2,
+              largoCm: resultadoIA.repuesto?.dimensiones.largo || 30,
+              anchoCm: resultadoIA.repuesto?.dimensiones.ancho || 20,
+              altoCm: resultadoIA.repuesto?.dimensiones.alto || 15,
+              pesoVolumetricoKg: resultadoIA.repuesto ? 
+                IAReconocimientoRepuestos.calcularPesoVolumetrico(resultadoIA.repuesto.dimensiones) : 1.8,
+              categoria: resultadoIA.clasificacion.categoria as any,
+              motivo: resultadoIA.repuesto ? 
+                `Repuesto reconocido por IA - ${resultadoIA.repuesto.categoria}` : 
+                'Clasificación automática',
+              esDGR: resultadoIA.clasificacion.esDGR
+            };
+            setClasificaciones(newClasificaciones);
+          }
+          if (resultadoIA.repuesto) {
+            const newRepuestosIA = [...repuestosIA];
+            const realIdx = prev.length + idx;
+            newRepuestosIA[realIdx] = resultadoIA.repuesto;
+            setRepuestosIA(newRepuestosIA);
+          }
+        });
+        
+        return todasLasLineas;
       });
     }
 
+    // Avanzar automáticamente al Paso 2 de revisión de ítems
+    setPasoActual(2);
+    setMensajeAlerta({
+      tipo: 'info',
+      texto: `✨ ¡Extracción SAP completada! Se cargaron los datos de ${datos.cliente} y ${datos.items.length} repuestos oficiales Changan.`
+    });
+
     // Cambiar a vista de nuevo pedido
     setView('newOrder');
+    
+    // Auto-ocultar mensaje después de 5 segundos
+    setTimeout(() => setMensajeAlerta(null), 5000);
   };
 
   const totalUnidades = lineas.reduce((sum, l) => sum + l.cantidad, 0);
@@ -411,7 +439,64 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                   </button>
                 </div>
               ) : null}
+              
+              {/* Indicador de Pasos */}
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-200">
+                <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${
+                  pasoActual === 1 ? 'bg-changan-accent text-white' : 'bg-gray-100 text-gray-500'
+                }`}>
+                  <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px]">1</span>
+                  Datos del Pedido
+                </div>
+                <i className="fas fa-chevron-right text-gray-300 text-xs"></i>
+                <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${
+                  pasoActual === 2 ? 'bg-changan-accent text-white' : 'bg-gray-100 text-gray-500'
+                }`}>
+                  <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px]">2</span>
+                  Repuestos
+                </div>
+                <i className="fas fa-chevron-right text-gray-300 text-xs"></i>
+                <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${
+                  pasoActual === 3 ? 'bg-changan-accent text-white' : 'bg-gray-100 text-gray-500'
+                }`}>
+                  <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px]">3</span>
+                  Confirmar
+                </div>
+              </div>
             </div>
+
+            {/* Mensaje de Alerta */}
+            {mensajeAlerta && (
+              <div className={`rounded-2xl p-4 mb-4 flex items-start gap-3 fade-in ${
+                mensajeAlerta.tipo === 'success' ? 'bg-green-50 border border-green-200' :
+                mensajeAlerta.tipo === 'error' ? 'bg-red-50 border border-red-200' :
+                mensajeAlerta.tipo === 'warning' ? 'bg-yellow-50 border border-yellow-200' :
+                'bg-blue-50 border border-blue-200'
+              }`}>
+                <i className={`fas ${
+                  mensajeAlerta.tipo === 'success' ? 'fa-check-circle text-green-600' :
+                  mensajeAlerta.tipo === 'error' ? 'fa-exclamation-circle text-red-600' :
+                  mensajeAlerta.tipo === 'warning' ? 'fa-exclamation-triangle text-yellow-600' :
+                  'fa-info-circle text-blue-600'
+                } text-xl mt-0.5`}></i>
+                <div className="flex-1">
+                  <p className={`text-sm font-medium ${
+                    mensajeAlerta.tipo === 'success' ? 'text-green-800' :
+                    mensajeAlerta.tipo === 'error' ? 'text-red-800' :
+                    mensajeAlerta.tipo === 'warning' ? 'text-yellow-800' :
+                    'text-blue-800'
+                  }`}>
+                    {mensajeAlerta.texto}
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setMensajeAlerta(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </div>
+            )}
 
             {/* Datos del Pedido */}
             <div className="glass-card rounded-2xl p-6 mb-4">
@@ -478,6 +563,18 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                     {errors.vin && <p className="text-xs text-red-600">{errors.vin}</p>}
                     <p className="text-xs text-gray-400 ml-auto">{vin.length}/17</p>
                   </div>
+                </div>
+
+                {/* Placa */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Placa del Vehículo</label>
+                  <input 
+                    type="text" 
+                    value={placa} 
+                    onChange={(e) => setPlaca(e.target.value.toUpperCase())}
+                    placeholder="Ej: ABC123"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-xl font-mono uppercase"
+                  />
                 </div>
 
                 {/* No. Cotización */}
@@ -753,6 +850,12 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                     <span className="text-gray-500 block text-xs">VIN</span>
                     <span className="font-mono text-xs">{vin}</span>
                   </div>
+                  {placa && (
+                    <div>
+                      <span className="text-gray-500 block text-xs">Placa</span>
+                      <span className="font-mono font-medium">{placa}</span>
+                    </div>
+                  )}
                   {noCotizacion && (
                     <div>
                       <span className="text-gray-500 block text-xs">Cotización</span>
@@ -845,7 +948,7 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
 
             <div className="flex gap-3">
               <button 
-                onClick={() => setView('newOrder')} 
+                onClick={() => { setPasoActual(2); setView('newOrder'); }} 
                 className="px-6 py-3 border border-gray-300 rounded-xl text-gray-600 hover:bg-gray-50"
               >
                 <i className="fas fa-arrow-left mr-2"></i>Volver
@@ -894,6 +997,18 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                   <span className="text-gray-600 text-sm">Modelo:</span>
                   <span className="font-medium">{modelo}</span>
                 </div>
+                {vin && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600 text-sm">VIN:</span>
+                    <span className="font-mono text-xs">{vin}</span>
+                  </div>
+                )}
+                {placa && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600 text-sm">Placa:</span>
+                    <span className="font-mono font-medium">{placa}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-600 text-sm">Líneas:</span>
                   <span className="font-medium">{lineas.length} repuesto(s)</span>
