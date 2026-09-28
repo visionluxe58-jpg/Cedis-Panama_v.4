@@ -106,58 +106,81 @@ export async function guardarPedidoSupabase(payload: {
   }
 
   try {
-    // 1. Insertar Cabecera en la tabla pedidos
-    const { data: pedidoData, error: pedidoError } = await supabase
-      .from('pedidos')
-      .insert({
+    // Timeout de seguridad de 7 segundos
+    const guardarOperacion = async () => {
+      // 1. Insertar Cabecera en la tabla pedidos
+      const { data: pedidoData, error: pedidoError } = await supabase
+        .from('pedidos')
+        .insert({
+          folio: payload.folio,
+          sucursal: payload.sucursal,
+          colaborador: payload.colaborador,
+          tipo_pedido: payload.tipoPedido,
+          cliente: payload.cliente,
+          modelo_changan: payload.modeloChangan,
+          vin: payload.vin,
+          placa: payload.placa || '',
+          no_cotizacion: payload.noCotizacion || '',
+          observaciones: payload.observaciones || '',
+          estado: 'TRANSMITIDO',
+        })
+        .select('id')
+        .single();
+
+      if (pedidoError) {
+        console.error('Error al insertar cabecera de pedido:', pedidoError);
+        return {
+          ok: false,
+          folio: payload.folio,
+          timestamp,
+          error: pedidoError.message.includes('relation') || pedidoError.message.includes('does not exist')
+            ? 'La tabla "pedidos" no existe aún en Supabase. Debes ejecutar el script SQL en el SQL Editor.'
+            : pedidoError.message,
+        };
+      }
+
+      const pedidoId = pedidoData.id;
+
+      // 2. Insertar Detalle en la tabla lineas_pedido
+      const lineasToInsert = payload.lineas.map((linea) => ({
+        pedido_id: pedidoId,
         folio: payload.folio,
-        sucursal: payload.sucursal,
-        colaborador: payload.colaborador,
-        tipo_pedido: payload.tipoPedido,
-        cliente: payload.cliente,
-        modelo_changan: payload.modeloChangan,
-        vin: payload.vin,
-        placa: payload.placa || '',
-        no_cotizacion: payload.noCotizacion || '',
-        observaciones: payload.observaciones || '',
-        estado: 'TRANSMITIDO',
-      })
-      .select('id')
-      .single();
+        codigo_repuesto: linea.codigoRepuesto,
+        descripcion: linea.descripcion,
+        cantidad: linea.cantidad || 1,
+        motivo: linea.motivo || '',
+        transporte: linea.transporte || 'Aereo',
+        peso_unitario_kg: linea.pesoUnitarioKg || 0,
+        es_dgr: linea.esDGR || false,
+        estatus_linea: 'Pendiente',
+        cantidad_asignada: 0,
+        cantidad_despachada: 0,
+      }));
 
-    if (pedidoError) {
-      console.error('Error al insertar cabecera de pedido:', pedidoError);
-      return { ok: false, folio: payload.folio, timestamp, error: pedidoError.message };
-    }
+      const { error: lineasError } = await supabase
+        .from('lineas_pedido')
+        .insert(lineasToInsert);
 
-    const pedidoId = pedidoData.id;
+      if (lineasError) {
+        console.error('Error al insertar líneas de pedido:', lineasError);
+        return { ok: false, folio: payload.folio, timestamp, error: lineasError.message };
+      }
 
-    // 2. Insertar Detalle en la tabla lineas_pedido
-    const lineasToInsert = payload.lineas.map((linea) => ({
-      pedido_id: pedidoId,
-      folio: payload.folio,
-      codigo_repuesto: linea.codigoRepuesto,
-      descripcion: linea.descripcion,
-      cantidad: linea.cantidad || 1,
-      motivo: linea.motivo || '',
-      transporte: linea.transporte || 'Aereo',
-      peso_unitario_kg: linea.pesoUnitarioKg || 0,
-      es_dgr: linea.esDGR || false,
-      estatus_linea: 'Pendiente',
-      cantidad_asignada: 0,
-      cantidad_despachada: 0,
-    }));
+      return { ok: true, folio: payload.folio, timestamp };
+    };
 
-    const { error: lineasError } = await supabase
-      .from('lineas_pedido')
-      .insert(lineasToInsert);
+    const timeoutOperacion = new Promise<{ ok: boolean; folio: string; timestamp: string; error?: string }>((resolve) => {
+      setTimeout(() => {
+        resolve({
+          ok: false,
+          folio: payload.folio,
+          timestamp,
+          error: 'Tiempo de espera agotado. Verifica tu conexión o que las tablas existan en Supabase.',
+        });
+      }, 7000);
+    });
 
-    if (lineasError) {
-      console.error('Error al insertar líneas de pedido:', lineasError);
-      return { ok: false, folio: payload.folio, timestamp, error: lineasError.message };
-    }
-
-    return { ok: true, folio: payload.folio, timestamp };
+    return await Promise.race([guardarOperacion(), timeoutOperacion]);
   } catch (err: any) {
     console.error('Error general en guardarPedidoSupabase:', err);
     return { ok: false, folio: payload.folio, timestamp, error: err.message };

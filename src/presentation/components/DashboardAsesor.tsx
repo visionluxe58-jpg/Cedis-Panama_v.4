@@ -220,22 +220,33 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
 
   const handleTransmitir = async () => {
     setView('transmitting');
-    const res = await transmitirPedido({
-      folio: numeroPedido,
-      sucursal: auth.sucursal,
-      colaborador: auth.nombre,
-      tipoPedido: canal,
-      cliente,
-      modeloChangan: modelo,
-      vin,
-      placa,
-      noCotizacion,
-      observaciones,
-      lineas
-    });
-    if (res.estado === 'TRANSMITIDO') {
-      setTimestamp(res.timestamp || new Date().toISOString());
-      setView('success');
+    try {
+      const res = await transmitirPedido({
+        folio: numeroPedido,
+        sucursal: auth.sucursal,
+        colaborador: auth.nombre,
+        tipoPedido: canal,
+        cliente,
+        modeloChangan: modelo,
+        vin,
+        placa,
+        noCotizacion,
+        observaciones,
+        lineas
+      });
+      if (res.estado === 'TRANSMITIDO') {
+        setTimestamp(res.timestamp || new Date().toISOString());
+        setView('success');
+      } else {
+        alert(
+          'Error al guardar en Supabase: ' +
+            (res.error || 'La tabla "pedidos" no existe todavía. Ejecuta el script SQL en Supabase.')
+        );
+        setView('confirm');
+      }
+    } catch (err: any) {
+      alert('Error de conexión: ' + (err.message || err));
+      setView('confirm');
     }
   };
 

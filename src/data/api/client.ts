@@ -105,6 +105,7 @@ export async function transmitirPedido(payload: any): Promise<TransmisionRespons
       estado: res.ok ? 'TRANSMITIDO' : 'BORRADOR',
       folio: res.folio,
       timestamp: res.timestamp,
+      error: res.error,
     };
   }
 
