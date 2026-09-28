@@ -175,7 +175,7 @@ export function AdminLogin({ onLogin, onBack }: AdminLoginProps) {
     setLoading(true);
 
     setTimeout(() => {
-      if (username === 'admin' && password === 'changan2025') {
+      if (username === 'admin' && password === 'changan2525') {
         onLogin({
           id: 'admin',
           nombre: 'Administrador',
@@ -244,7 +244,7 @@ export function AdminLogin({ onLogin, onBack }: AdminLoginProps) {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-xl font-medium disabled:opacity-60"
+              className="w-full py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-xl font-medium disabled:opacity-60"
             >
               {loading ? (
                 <><i className="fas fa-spinner fa-spin mr-2"></i>Verificando...</>
@@ -253,17 +253,6 @@ export function AdminLogin({ onLogin, onBack }: AdminLoginProps) {
               )}
             </button>
           </form>
-
-          <div className="mt-6 p-3 bg-blue-50 rounded-xl">
-            <p className="text-xs text-blue-700 flex items-start gap-2">
-              <i className="fas fa-info-circle mt-0.5"></i>
-              <span>
-                <strong>Credenciales de prueba:</strong><br />
-                Usuario: <code className="bg-blue-100 px-1 rounded">admin</code><br />
-                Contraseña: <code className="bg-blue-100 px-1 rounded">changan2025</code>
-              </span>
-            </p>
-          </div>
         </div>
 
         <div className="text-center mt-4">
