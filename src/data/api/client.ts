@@ -1,12 +1,12 @@
 /**
  * Cliente API - Comunicación con Google Apps Script Backend
- * Incluye modo demo para desarrollo
+ * Versión Beta v04 - Producción
  */
 
 import type { Asesor, FolioResponse, TransmisionResponse } from '../../domain/models/types';
 
 const STORAGE_KEY = 'cedis_webapp_url';
-const DEMO_MODE = true; // Cambiar a false cuando se configure el backend real
+const DEMO_MODE = false; // Beta v04 - Modo producción
 
 // ========== CONFIGURACIÓN ==========
 
