@@ -26,8 +26,14 @@ import {
   obtenerDespachosSupabase,
   actualizarUbicacionRepuestoSupabase,
   obtenerEncargadosSupabase,
+  eliminarPedidosSupabase,
 } from '../../data/api/supabaseClient';
-import { descargarGuiaDespacho } from '../../domain/services/generadorGuiasPDF';
+import {
+  descargarEtiquetaPedido,
+  descargarEtiquetasEnLote,
+  descargarActaRetiroCedis,
+  descargarGuiaDespacho,
+} from '../../domain/services/generadorGuiasPDF';
 
 interface AdminDashboardProps {
   auth: AuthState;
@@ -88,21 +94,27 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   // Filtros de despachos
   const [busquedaDespacho, setBusquedaDespacho] = useState<string>('');
 
-  // Modal de Despacho Operativo
-  const [modalDespachoAbierto, setModalDespachoAbierto] = useState<boolean>(false);
-  const [lineaADespachar, setLineaADespachar] = useState<FilaRastreador | null>(null);
-  const [transportistaInput, setTransportistaInput] = useState<string>('Transporte Interno CEDIS');
-  const [placaVehiculoInput, setPlacaVehiculoInput] = useState<string>('CAMION-CEDIS-01');
-  const [observacionesInput, setObservacionesInput] = useState<string>('');
+  // Estados de selección múltiple para eliminación y acciones en lote
+  const [selectedLineas, setSelectedLineas] = useState<Set<string>>(new Set());
+
+  // Modal de Retiro en Mostrador CEDIS (Sin camiones de reparto)
+  const [modalRetiroAbierto, setModalRetiroAbierto] = useState<boolean>(false);
+  const [lineaARetirar, setLineaARetirar] = useState<FilaRastreador | null>(null);
+  const [personaQueRetiraInput, setPersonaQueRetiraInput] = useState<string>('');
+  const [cedulaPersonaInput, setCedulaPersonaInput] = useState<string>('');
+  const [observacionesRetiroInput, setObservacionesRetiroInput] = useState<string>('');
+  const [entregadorCedisInput, setEntregadorCedisInput] = useState<string>(auth.nombre || 'Bodega Central CEDIS');
+
+  // Modo de visualización en BD Encargados (tabla / tarjetas)
+  const [vistaEncargadosModo, setVistaEncargadosModo] = useState<'tabla' | 'tarjetas'>('tabla');
 
   // Modal de Edición de Ubicación en Bodega
   const [modalRackAbierto, setModalRackAbierto] = useState<boolean>(false);
   const [itemAEditarRack, setItemAEditarRack] = useState<DPLDetalle | null>(null);
   const [nuevaUbicacionInput, setNuevaUbicacionInput] = useState<string>('');
 
-  // Cargar todos los datos desde Supabase
-  const cargarDatos = async () => {
-    if (!isSupabaseConfigured()) return;
+  // Cargar todos los datos desde Supabase y Memoria Local
+  const cargarDatos = async (showToast = false) => {
     setCargando(true);
     try {
       const [realFilas, realManifiestos, realInventario, realDespachos, realEncargados] = await Promise.all([
@@ -113,23 +125,30 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         obtenerEncargadosSupabase(),
       ]);
 
-      const hayFilas = realFilas && realFilas.length > 0;
-      const hayManifiestos = realManifiestos && realManifiestos.length > 0;
-      const hayInventario = realInventario && realInventario.length > 0;
-
-      if (hayFilas) setFilas(realFilas);
-      if (hayManifiestos) setManifiestos(realManifiestos);
-      if (hayInventario) setInventario(realInventario);
+      if (realFilas) {
+        setFilas(realFilas);
+      }
+      if (realManifiestos && realManifiestos.length > 0) setManifiestos(realManifiestos);
+      if (realInventario && realInventario.length > 0) setInventario(realInventario);
       if (realDespachos) setDespachos(realDespachos);
-      if (realEncargados) setEncargados(realEncargados);
+      if (realEncargados && realEncargados.length > 0) setEncargados(realEncargados);
 
-      if (hayFilas || hayManifiestos || hayInventario) {
+      if (isSupabaseConfigured()) {
         setIsLive(true);
       }
 
-      setUltimoSync(new Date().toLocaleTimeString('es-PA'));
+      const hora = new Date().toLocaleTimeString('es-PA');
+      setUltimoSync(hora);
+
+      if (showToast) {
+        const count = realFilas ? realFilas.length : 0;
+        notificar(`Sincronización completada: ${count} pedidos cargados (Supabase + Memoria local).`);
+      }
     } catch (err) {
       console.error('Error cargando datos de Supabase en Admin:', err);
+      if (showToast) {
+        notificar('Error al sincronizar con el servidor.');
+      }
     } finally {
       setCargando(false);
     }
@@ -159,9 +178,94 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     setModalRastreadorAbierto(true);
   };
 
+  // Selección múltiple
+  const handleToggleSelectAll = () => {
+    if (selectedLineas.size === pedidosFiltrados.length && pedidosFiltrados.length > 0) {
+      setSelectedLineas(new Set());
+    } else {
+      setSelectedLineas(new Set(pedidosFiltrados.map(f => f.lineaId)));
+    }
+  };
+
+  const handleToggleSelectRow = (lineaId: string) => {
+    setSelectedLineas(prev => {
+      const nuevo = new Set(prev);
+      if (nuevo.has(lineaId)) {
+        nuevo.delete(lineaId);
+      } else {
+        nuevo.add(lineaId);
+      }
+      return nuevo;
+    });
+  };
+
+  // Eliminación individual de un pedido
+  const handleEliminarIndividual = async (fila: FilaRastreador) => {
+    const confirmar = window.confirm(
+      `¿Está seguro de eliminar el pedido ${fila.pedidoId}?\nRepuesto: ${fila.codigoRepuesto}\nSucursal: ${fila.sucursal}\n\nEsta acción borrará el pedido de Supabase y de la memoria local.`
+    );
+    if (!confirmar) return;
+
+    try {
+      await eliminarPedidosSupabase([fila.lineaId], [fila.pedidoId]);
+      setFilas(prev => prev.filter(f => f.lineaId !== fila.lineaId));
+      setSelectedLineas(prev => {
+        const copy = new Set(prev);
+        copy.delete(fila.lineaId);
+        return copy;
+      });
+      notificar(`Pedido ${fila.pedidoId} eliminado con éxito.`);
+    } catch (err) {
+      console.error('Error eliminando pedido:', err);
+      notificar('Error al eliminar el pedido.');
+    }
+  };
+
+  // Eliminación masiva en lote
+  const handleEliminarSeleccionados = async () => {
+    if (selectedLineas.size === 0) return;
+
+    const count = selectedLineas.size;
+    const confirmar = window.confirm(
+      `¿Está seguro de eliminar permanentemente ${count} pedidos seleccionados?\nSe removerán de la base de datos de Supabase y del panel.`
+    );
+    if (!confirmar) return;
+
+    try {
+      const idsAEliminar = Array.from(selectedLineas);
+      const foliosAEliminar = filas
+        .filter(f => selectedLineas.has(f.lineaId))
+        .map(f => f.pedidoId);
+
+      await eliminarPedidosSupabase(idsAEliminar, foliosAEliminar);
+      setFilas(prev => prev.filter(f => !selectedLineas.has(f.lineaId)));
+      setSelectedLineas(new Set());
+      notificar(`Se eliminaron ${count} pedidos correctamente.`);
+    } catch (err) {
+      console.error('Error eliminando pedidos en lote:', err);
+      notificar('Error al eliminar pedidos seleccionados.');
+    }
+  };
+
+  // Imprimir etiquetas en lote (PDF con tamaño 100x150mm / 4x6" por página)
+  const handleImprimirEtiquetasLote = () => {
+    const seleccionados = filas.filter(f => selectedLineas.has(f.lineaId));
+    if (seleccionados.length === 0) {
+      notificar('Seleccione al menos un pedido para imprimir etiquetas.');
+      return;
+    }
+    descargarEtiquetasEnLote(seleccionados);
+    notificar(`Generando PDF con ${seleccionados.length} etiquetas de pedido especial...`);
+  };
+
+  // Descargar etiqueta individual
+  const handleDescargarEtiqueta = (fila: FilaRastreador) => {
+    descargarEtiquetaPedido(fila);
+    notificar(`Etiqueta de pedido especial generada para ${fila.codigoRepuesto}.`);
+  };
+
   // Acción rápida: Asignar Stock a una línea
   const handleAsignarStock = async (linea: FilaRastreador) => {
-    // Buscar si hay stock en bodega
     const stock = inventario.find(i => (i.codigoRepuesto || '').toUpperCase() === (linea.codigoRepuesto || '').toUpperCase());
     const contenedor = stock?.contenedorId || 'CONT-CEDIS';
     const pallet = stock?.palletCaseNo || 'PAL-01';
@@ -173,7 +277,6 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       ubicacionCedis: ubicacion,
     });
 
-    // Actualizar estado local inmediatamente
     setFilas(prev =>
       prev.map(f =>
         f.lineaId === linea.lineaId
@@ -185,60 +288,66 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     notificar(`Línea ${linea.codigoRepuesto} asignada en pallet ${pallet} (${ubicacion})`);
   };
 
-  // Abrir modal para despachar
-  const handlePrepararDespacho = (linea: FilaRastreador) => {
-    setLineaADespachar(linea);
-    setTransportistaInput('Transporte Interno CEDIS');
-    setPlacaVehiculoInput('CAMION-CEDIS-01');
-    setObservacionesInput(`Despacho para OR ${linea.numeroOR || 'Stock'} - Cliente: ${linea.cliente || 'Taller'}`);
-    setModalDespachoAbierto(true);
+  // Abrir modal de Retiro en Mostrador CEDIS
+  const handleAbrirModalRetiro = (linea: FilaRastreador) => {
+    setLineaARetirar(linea);
+    setPersonaQueRetiraInput('');
+    setCedulaPersonaInput('');
+    setEntregadorCedisInput(auth.nombre || 'Bodega Central CEDIS');
+    setObservacionesRetiroInput(`Retiro en mostrador CEDIS para orden ${linea.numeroOR || 'Stock'} - ${linea.cliente || 'Taller'}`);
+    setModalRetiroAbierto(true);
   };
 
-  // Confirmar Despacho y Descargar Guía PDF
-  const handleConfirmarDespacho = async () => {
-    if (!lineaADespachar) return;
+  // Confirmar Retiro en Mostrador CEDIS y Descargar Acta PDF
+  const handleConfirmarRetiroCedis = async () => {
+    if (!lineaARetirar) return;
 
-    const guiaId = `GUIA-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (!personaQueRetiraInput.trim()) {
+      alert('Por favor ingrese el nombre del personal de la sucursal que retira el repuesto.');
+      return;
+    }
+
+    const actaId = `ACTA-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const fechaHora = new Date().toLocaleString('es-PA');
 
-    // 1. Descargar Guía de Despacho en PDF
-    descargarGuiaDespacho({
-      numeroGuia: guiaId,
+    // 1. Descargar Acta oficial de Retiro en Mostrador CEDIS
+    descargarActaRetiroCedis({
+      numeroActa: actaId,
       fecha: fechaHora,
-      sucursalDestino: lineaADespachar.sucursal,
-      transportista: transportistaInput,
-      placaVehiculo: placaVehiculoInput,
-      despachadorCedis: auth.nombre,
-      observaciones: observacionesInput,
-      lineas: [lineaADespachar],
+      sucursalDestino: lineaARetirar.sucursal,
+      personaQueRetira: personaQueRetiraInput.trim(),
+      cedulaPersona: cedulaPersonaInput.trim() || 'N/A',
+      entregadorCedis: entregadorCedisInput.trim() || auth.nombre,
+      observaciones: observacionesRetiroInput,
+      lineas: [lineaARetirar],
     });
 
-    // 2. Actualizar en Supabase
-    await actualizarEstatusPedidoSupabase(lineaADespachar.lineaId, 'Despachado', {
-      cantidadDespachada: lineaADespachar.cantidadSolicitada,
+    // 2. Actualizar en Supabase a Despachado / Retirado
+    await actualizarEstatusPedidoSupabase(lineaARetirar.lineaId, 'Despachado', {
+      cantidadDespachada: lineaARetirar.cantidadSolicitada,
     });
 
-    // 3. Registrar en tabla Despachos
+    // 3. Registrar en tabla de Despachos/Retiros
     const nuevoRegistro: Omit<DespachoRegistro, 'id'> = {
-      numeroGuia: guiaId,
-      pedidoId: lineaADespachar.pedidoId,
-      sucursalDestino: lineaADespachar.sucursal,
-      transportista: transportistaInput,
-      placaVehiculo: placaVehiculoInput,
-      despachadorCedis: auth.nombre,
+      numeroGuia: actaId,
+      pedidoId: lineaARetirar.pedidoId,
+      sucursalDestino: lineaARetirar.sucursal,
+      transportista: `Retiro Mostrador: ${personaQueRetiraInput.trim()} (Céd: ${cedulaPersonaInput.trim() || 'N/A'})`,
+      placaVehiculo: 'RETIRO EN CEDIS',
+      despachadorCedis: entregadorCedisInput.trim() || auth.nombre,
       fechaDespacho: new Date().toISOString().slice(0, 10),
-      totalPiezas: Number(lineaADespachar.cantidadSolicitada) || 1,
+      totalPiezas: Number(lineaARetirar.cantidadSolicitada) || 1,
       totalLineas: 1,
-      estadoEntrega: 'EN TRANSITO',
-      observaciones: observacionesInput,
-      lineasJson: JSON.stringify([lineaADespachar]),
+      estadoEntrega: 'ENTREGADO',
+      observaciones: observacionesRetiroInput,
+      lineasJson: JSON.stringify([lineaARetirar]),
     };
     await guardarDespachoSupabase(nuevoRegistro);
 
-    // Actualizar estado local
+    // 4. Actualizar estado reactivo local
     setFilas(prev =>
       prev.map(f =>
-        f.lineaId === lineaADespachar.lineaId
+        f.lineaId === lineaARetirar.lineaId
           ? { ...f, estatusLinea: 'Despachado', cantidadDespachada: f.cantidadSolicitada }
           : f
       )
@@ -252,29 +361,13 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       ...prev,
     ]);
 
-    setModalDespachoAbierto(false);
-    setLineaADespachar(null);
-    notificar(`¡Despacho ${guiaId} registrado con éxito! Guía PDF descargada.`);
+    setModalRetiroAbierto(false);
+    setLineaARetirar(null);
+    notificar(`¡Retiro confirmado! Acta ${actaId} generada y descargada.`);
   };
 
-  // Descarga directa de Guía PDF desde la lista
-  const handleDescargarGuiaDirecta = (linea: FilaRastreador) => {
-    const guiaId = `GUIA-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-    descargarGuiaDespacho({
-      numeroGuia: guiaId,
-      fecha: new Date().toLocaleString('es-PA'),
-      sucursalDestino: linea.sucursal,
-      transportista: 'Transporte Interno CEDIS',
-      placaVehiculo: 'CAMION-CEDIS-01',
-      despachadorCedis: auth.nombre,
-      observaciones: `Copia de Guía para pedido ${linea.pedidoId}`,
-      lineas: [linea],
-    });
-    notificar(`Guía PDF ${guiaId} generada y descargada.`);
-  };
-
-  // Re-descargar Guía desde pestaña Despachos
-  const handleReDescargarGuiaDespacho = (d: DespachoRegistro) => {
+  // Re-descargar Acta de Retiro desde la pestaña de Despachos/Retiros
+  const handleReDescargarActa = (d: DespachoRegistro) => {
     let lineasRecuperadas: FilaRastreador[] = [];
     try {
       if (d.lineasJson) {
@@ -290,7 +383,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
           lineaId: 'LIN-REC',
           pedidoId: d.pedidoId,
           codigoRepuesto: 'REPUESTOS-VARIOS',
-          descripcionOficial: `Lote de ${d.totalPiezas} piezas transferidas a ${d.sucursalDestino}`,
+          descripcionOficial: `Lote de ${d.totalPiezas} piezas retiradas por ${d.sucursalDestino}`,
           cantidadSolicitada: d.totalPiezas,
           cantidadAsignada: d.totalPiezas,
           cantidadDespachada: d.totalPiezas,
@@ -309,17 +402,17 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       ];
     }
 
-    descargarGuiaDespacho({
-      numeroGuia: d.numeroGuia,
+    descargarActaRetiroCedis({
+      numeroActa: d.numeroGuia,
       fecha: d.fechaDespacho,
       sucursalDestino: d.sucursalDestino,
-      transportista: d.transportista,
-      placaVehiculo: d.placaVehiculo,
-      despachadorCedis: d.despachadorCedis,
+      personaQueRetira: d.transportista.replace('Retiro Mostrador:', '').trim() || 'Personal Sucursal',
+      cedulaPersona: 'Verificada en mostrador',
+      entregadorCedis: d.despachadorCedis,
       observaciones: d.observaciones,
       lineas: lineasRecuperadas,
     });
-    notificar(`Guía ${d.numeroGuia} re-descargada.`);
+    notificar(`Acta ${d.numeroGuia} re-descargada.`);
   };
 
   // Guardar nueva ubicación en rack
@@ -448,7 +541,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
             <div className="flex items-center gap-2.5">
               {/* Botón Sincronizar */}
               <button
-                onClick={cargarDatos}
+                onClick={() => cargarDatos(true)}
                 disabled={cargando}
                 className="flex items-center gap-2 px-3.5 py-1.5 bg-white/15 hover:bg-white/25 active:bg-white/30 rounded-lg text-xs font-bold transition-all border border-white/25 shadow-sm disabled:opacity-50"
                 title="Actualizar datos directamente desde Supabase"
@@ -513,8 +606,8 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
-            <i className="fas fa-truck-loading"></i>
-            <span>Despachos & Envíos</span>
+            <i className="fas fa-clipboard-check"></i>
+            <span>Retiro en Mostrador CEDIS</span>
             <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-600 text-white">{despachos.length}</span>
           </button>
 
@@ -574,8 +667,9 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
-            <i className="fas fa-users-cog"></i>
-            <span>Equipo & Sucursales</span>
+            <i className="fas fa-address-book"></i>
+            <span>BD Encargados</span>
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-900/30 text-white">{encargados.length || 9}</span>
           </button>
         </div>
       </nav>
@@ -715,163 +809,241 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 </div>
               </div>
 
-              {/* Listado de Pedidos */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-600 uppercase tracking-wider font-bold text-[11px] border-b border-slate-200">
-                      <th className="py-3 px-4">Pedido / OR</th>
-                      <th className="py-3 px-4">Repuesto Solicitado</th>
-                      <th className="py-3 px-4">Sucursal & Cliente</th>
-                      <th className="py-3 px-4 text-center">Cant.</th>
-                      <th className="py-3 px-4">Ubicación Bodega</th>
-                      <th className="py-3 px-4 text-center">Estatus</th>
-                      <th className="py-3 px-4 text-right">Acciones Operativas</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {pedidosFiltrados.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="py-12 text-center text-slate-400">
-                          <i className="fas fa-inbox text-3xl mb-2 block"></i>
-                          No se encontraron pedidos con los filtros aplicados.
-                        </td>
+                {/* Barra de Acciones en Lote (Eliminación múltiple y Etiquetas PDF) */}
+                {selectedLineas.size > 0 && (
+                  <div className="mx-5 mb-3 p-3 bg-slate-900 text-white rounded-xl flex items-center justify-between flex-wrap gap-3 shadow-lg border border-red-500/30">
+                    <div className="flex items-center gap-3">
+                      <span className="bg-red-600 text-white font-black text-xs px-2.5 py-1 rounded-md shadow-sm">
+                        {selectedLineas.size} pedidos seleccionados
+                      </span>
+                      <span className="text-xs text-slate-300 hidden sm:inline font-medium">
+                        Acciones en lote disponibles:
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={handleImprimirEtiquetasLote}
+                        className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-700 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm"
+                        title="Imprimir etiquetas de pedidos especiales (100x150mm) para los pedidos seleccionados"
+                      >
+                        <i className="fas fa-tags text-cyan-200"></i>
+                        <span>Imprimir Etiquetas PDF</span>
+                      </button>
+
+                      <button
+                        onClick={handleEliminarSeleccionados}
+                        className="px-3 py-1.5 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm"
+                        title="Eliminar permanentemente todos los pedidos seleccionados de la base de datos"
+                      >
+                        <i className="fas fa-trash-alt text-red-200"></i>
+                        <span>Eliminar Seleccionados</span>
+                      </button>
+
+                      <button
+                        onClick={() => setSelectedLineas(new Set())}
+                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold transition-colors"
+                      >
+                        Deseleccionar
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Listado de Pedidos */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-600 uppercase tracking-wider font-bold text-[11px] border-b border-slate-200">
+                        <th className="py-3 px-3 text-center w-10">
+                          <input
+                            type="checkbox"
+                            checked={pedidosFiltrados.length > 0 && selectedLineas.size === pedidosFiltrados.length}
+                            onChange={handleToggleSelectAll}
+                            className="rounded border-slate-300 text-red-600 focus:ring-red-500 cursor-pointer w-4 h-4"
+                            title="Seleccionar / deseleccionar todos los pedidos visibles"
+                          />
+                        </th>
+                        <th className="py-3 px-4">Pedido / OR</th>
+                        <th className="py-3 px-4">Repuesto Solicitado</th>
+                        <th className="py-3 px-4">Sucursal & Cliente</th>
+                        <th className="py-3 px-4 text-center">Cant.</th>
+                        <th className="py-3 px-4">Ubicación Bodega</th>
+                        <th className="py-3 px-4 text-center">Estatus</th>
+                        <th className="py-3 px-4 text-right">Acciones Operativas</th>
                       </tr>
-                    ) : (
-                      pedidosFiltrados.map((fila) => {
-                        const esDespachado = fila.estatusLinea === 'Despachado';
-                        const esAsignado = fila.estatusLinea === 'Asignado';
-                        const esSinStock = fila.estatusLinea === 'Sin Stock';
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {pedidosFiltrados.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-12 text-center text-slate-400">
+                            <i className="fas fa-inbox text-3xl mb-2 block"></i>
+                            No se encontraron pedidos con los filtros aplicados.
+                          </td>
+                        </tr>
+                      ) : (
+                        pedidosFiltrados.map((fila) => {
+                          const esDespachado = fila.estatusLinea === 'Despachado';
+                          const esAsignado = fila.estatusLinea === 'Asignado';
+                          const esSinStock = fila.estatusLinea === 'Sin Stock';
+                          const isChecked = selectedLineas.has(fila.lineaId);
 
-                        return (
-                          <tr key={fila.lineaId} className="hover:bg-slate-50/80 transition-colors">
-                            {/* Pedido / OR */}
-                            <td className="py-3 px-4">
-                              <span className="font-mono font-bold text-slate-900 block">{fila.pedidoId}</span>
-                              <span className="text-[10px] text-slate-400 font-mono">
-                                {fila.numeroOR ? `OR: ${fila.numeroOR}` : 'Sin No. OR'}
-                              </span>
-                            </td>
+                          return (
+                            <tr
+                              key={fila.lineaId}
+                              className={`hover:bg-slate-50/80 transition-colors ${
+                                isChecked ? 'bg-red-50/50' : ''
+                              }`}
+                            >
+                              {/* Checkbox de Selección */}
+                              <td className="py-3 px-3 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => handleToggleSelectRow(fila.lineaId)}
+                                  className="rounded border-slate-300 text-red-600 focus:ring-red-500 cursor-pointer w-4 h-4"
+                                />
+                              </td>
 
-                            {/* Repuesto */}
-                            <td className="py-3 px-4 max-w-xs">
-                              <span className="font-mono font-bold text-cyan-700 block text-xs">{fila.codigoRepuesto}</span>
-                              <span className="text-slate-600 truncate block text-[11px]" title={fila.descripcionOficial}>
-                                {fila.descripcionOficial}
-                              </span>
-                              {fila.vin && (
-                                <span className="text-[10px] text-slate-400 font-mono block">VIN: {fila.vin}</span>
-                              )}
-                            </td>
-
-                            {/* Sucursal & Cliente */}
-                            <td className="py-3 px-4">
-                              <span className="font-bold text-slate-800 block">{fila.sucursal}</span>
-                              <span className="text-[11px] text-slate-500 block truncate max-w-[150px]">
-                                {fila.cliente || 'Cliente General'}
-                              </span>
-                              <span className="text-[10px] text-slate-400 block">Asesor: {fila.colaborador}</span>
-                            </td>
-
-                            {/* Cantidad */}
-                            <td className="py-3 px-4 text-center">
-                              <span className="font-black text-slate-900 text-sm">{fila.cantidadSolicitada}</span>
-                              <span className="text-[10px] text-slate-400 block">unid.</span>
-                            </td>
-
-                            {/* Ubicación Bodega */}
-                            <td className="py-3 px-4 font-mono text-[11px]">
-                              {fila.ubicacionCedis ? (
-                                <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded border border-slate-300">
-                                  <i className="fas fa-map-marker-alt text-red-500 text-[10px]"></i>
-                                  {fila.ubicacionCedis}
+                              {/* Pedido / OR */}
+                              <td className="py-3 px-4">
+                                <span className="font-mono font-bold text-slate-900 block">{fila.pedidoId}</span>
+                                <span className="text-[10px] text-slate-400 font-mono">
+                                  {fila.numeroOR ? `OR: ${fila.numeroOR}` : 'Sin No. OR'}
                                 </span>
-                              ) : (
-                                <span className="text-slate-400 italic">Por asignar</span>
-                              )}
-                              {fila.palletAsignado && (
-                                <span className="block text-[10px] text-slate-400">Pallet: {fila.palletAsignado}</span>
-                              )}
-                            </td>
+                              </td>
 
-                            {/* Estatus */}
-                            <td className="py-3 px-4 text-center">
-                              <span
-                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold ${
-                                  esDespachado
-                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                    : esAsignado
-                                    ? 'bg-blue-100 text-blue-800 border border-blue-300'
-                                    : esSinStock
-                                    ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                                    : 'bg-amber-100 text-amber-800 border border-amber-300'
-                                }`}
-                              >
-                                {esDespachado && <i className="fas fa-check-double text-[10px]"></i>}
-                                {esAsignado && <i className="fas fa-box-open text-[10px]"></i>}
-                                {esSinStock && <i className="fas fa-times-circle text-[10px]"></i>}
-                                {!esDespachado && !esAsignado && !esSinStock && <i className="fas fa-clock text-[10px]"></i>}
-                                {fila.estatusLinea || 'Pendiente'}
-                              </span>
-                            </td>
-
-                            {/* Acciones */}
-                            <td className="py-3 px-4 text-right">
-                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                                {!esDespachado && (
-                                  <>
-                                    {!esAsignado && (
-                                      <button
-                                        onClick={() => handleAsignarStock(fila)}
-                                        className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded font-bold text-[11px] transition-colors flex items-center gap-1"
-                                        title="Asignar rack y pallet de inventario"
-                                      >
-                                        <i className="fas fa-bolt"></i>
-                                        <span>Asignar</span>
-                                      </button>
-                                    )}
-
-                                    <button
-                                      onClick={() => handlePrepararDespacho(fila)}
-                                      className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold text-[11px] transition-colors flex items-center gap-1 shadow-sm"
-                                      title="Despachar a sucursal y generar Guía oficial en PDF"
-                                    >
-                                      <i className="fas fa-truck"></i>
-                                      <span>Despachar</span>
-                                    </button>
-                                  </>
+                              {/* Repuesto */}
+                              <td className="py-3 px-4 max-w-xs">
+                                <span className="font-mono font-bold text-cyan-700 block text-xs">{fila.codigoRepuesto}</span>
+                                <span className="text-slate-600 truncate block text-[11px]" title={fila.descripcionOficial}>
+                                  {fila.descripcionOficial}
+                                </span>
+                                {fila.vin && (
+                                  <span className="text-[10px] text-slate-400 font-mono block">VIN: {fila.vin}</span>
                                 )}
+                              </td>
 
-                                <button
-                                  onClick={() => handleDescargarGuiaDirecta(fila)}
-                                  className="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded font-semibold text-[11px] transition-colors"
-                                  title="Generar y descargar Guía de Conduce en PDF"
-                                >
-                                  <i className="fas fa-file-pdf text-red-600 mr-1"></i>Guía
-                                </button>
+                              {/* Sucursal & Cliente */}
+                              <td className="py-3 px-4">
+                                <span className="font-bold text-slate-800 block">{fila.sucursal}</span>
+                                <span className="text-[11px] text-slate-500 block truncate max-w-[150px]">
+                                  {fila.cliente || 'Cliente General'}
+                                </span>
+                                <span className="text-[10px] text-slate-400 block">Asesor: {fila.colaborador}</span>
+                              </td>
 
-                                <button
-                                  onClick={() => handleAbrirRastreador(fila.codigoRepuesto)}
-                                  className="px-2 py-1 bg-cyan-600 hover:bg-cyan-700 text-white rounded font-semibold text-[11px] transition-colors"
-                                  title="Ver trazabilidad en contenedores y pedidos"
+                              {/* Cantidad */}
+                              <td className="py-3 px-4 text-center">
+                                <span className="font-black text-slate-900 text-sm">{fila.cantidadSolicitada}</span>
+                                <span className="text-[10px] text-slate-400 block">unid.</span>
+                              </td>
+
+                              {/* Ubicación Bodega */}
+                              <td className="py-3 px-4 font-mono text-[11px]">
+                                {fila.ubicacionCedis ? (
+                                  <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded border border-slate-300">
+                                    <i className="fas fa-map-marker-alt text-red-500 text-[10px]"></i>
+                                    {fila.ubicacionCedis}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 italic">Por asignar</span>
+                                )}
+                                {fila.palletAsignado && (
+                                  <span className="block text-[10px] text-slate-400">Pallet: {fila.palletAsignado}</span>
+                                )}
+                              </td>
+
+                              {/* Estatus */}
+                              <td className="py-3 px-4 text-center">
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                                    esDespachado
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                      : esAsignado
+                                      ? 'bg-blue-100 text-blue-800 border border-blue-300'
+                                      : esSinStock
+                                      ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                      : 'bg-amber-100 text-amber-800 border border-amber-300'
+                                  }`}
                                 >
-                                  <i className="fas fa-search"></i>
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
+                                  {esDespachado && <i className="fas fa-check-double text-[10px]"></i>}
+                                  {esAsignado && <i className="fas fa-box-open text-[10px]"></i>}
+                                  {esSinStock && <i className="fas fa-times-circle text-[10px]"></i>}
+                                  {!esDespachado && !esAsignado && !esSinStock && <i className="fas fa-clock text-[10px]"></i>}
+                                  {fila.estatusLinea || 'Pendiente'}
+                                </span>
+                              </td>
+
+                              {/* Acciones */}
+                              <td className="py-3 px-4 text-right">
+                                <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                  {!esDespachado && (
+                                    <>
+                                      {!esAsignado && (
+                                        <button
+                                          onClick={() => handleAsignarStock(fila)}
+                                          className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded font-bold text-[11px] transition-colors flex items-center gap-1 shadow-sm"
+                                          title="Asignar rack y pallet de inventario"
+                                        >
+                                          <i className="fas fa-bolt"></i>
+                                          <span>Asignar</span>
+                                        </button>
+                                      )}
+
+                                      <button
+                                        onClick={() => handleAbrirModalRetiro(fila)}
+                                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold text-[11px] transition-colors flex items-center gap-1 shadow-sm"
+                                        title="Registrar retiro en mostrador CEDIS por parte de la sucursal y generar Acta PDF"
+                                      >
+                                        <i className="fas fa-clipboard-check"></i>
+                                        <span>Retiro Mostrador</span>
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {/* Botón Etiqueta de Pedido Especial */}
+                                  <button
+                                    onClick={() => handleDescargarEtiqueta(fila)}
+                                    className="px-2 py-1 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-300 rounded font-bold text-[11px] transition-colors flex items-center gap-1"
+                                    title="Descargar e imprimir Etiqueta Oficial de Pedido Especial (100x150mm / 4x6 pulg.)"
+                                  >
+                                    <i className="fas fa-tag text-cyan-600"></i>
+                                    <span>Etiqueta</span>
+                                  </button>
+
+                                  {/* Botón Rastreador */}
+                                  <button
+                                    onClick={() => handleAbrirRastreador(fila.codigoRepuesto)}
+                                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded font-semibold text-[11px] transition-colors"
+                                    title="Ver trazabilidad en contenedores y pedidos"
+                                  >
+                                    <i className="fas fa-search"></i>
+                                  </button>
+
+                                  {/* Botón Eliminar Pedido Individual */}
+                                  <button
+                                    onClick={() => handleEliminarIndividual(fila)}
+                                    className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-200 rounded font-semibold text-[11px] transition-colors"
+                                    title="Eliminar este pedido de la base de datos"
+                                  >
+                                    <i className="fas fa-trash-alt"></i>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
         {/* ========================================================================= */}
-        {/* VISTA 2: DESPACHOS & ENVÍOS (Hoja Despachos)                              */}
+        {/* VISTA 2: RETIRO EN MOSTRADOR CEDIS & ACTAS DE ENTREGA                     */}
         {/* ========================================================================= */}
         {vistaActiva === 'despachos' && (
           <div className="space-y-6">
@@ -879,11 +1051,11 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                    <i className="fas fa-truck-moving text-emerald-600"></i>
-                    Historial de Despachos y Conduces Emitidos
+                    <i className="fas fa-clipboard-check text-emerald-600"></i>
+                    Control de Retiros en Mostrador CEDIS y Actas de Entrega
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    Control de transferencias inter-sucursales enviadas desde CEDIS Changan hacia los talleres.
+                    Historial oficial de repuestos especiales retirados presencialmente por los asesores y choferes de cada sucursal en el mostrador de Bodega Central.
                   </p>
                 </div>
 
@@ -892,7 +1064,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                     <input
                       type="text"
-                      placeholder="Buscar por guía, pedido, sucursal..."
+                      placeholder="Buscar por acta, pedido, sucursal..."
                       value={busquedaDespacho}
                       onChange={e => setBusquedaDespacho(e.target.value)}
                       className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -901,26 +1073,26 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 </div>
               </div>
 
-              {/* Tabla de Despachos */}
+              {/* Tabla de Retiros */}
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="bg-slate-100 text-slate-600 font-bold uppercase tracking-wider text-[11px] border-b border-slate-200">
-                      <th className="py-3 px-4">No. Guía</th>
+                      <th className="py-3 px-4">No. Acta</th>
                       <th className="py-3 px-4">Pedido Origen</th>
-                      <th className="py-3 px-4">Sucursal Destino</th>
-                      <th className="py-3 px-4">Fecha / Transportista</th>
+                      <th className="py-3 px-4">Sucursal Retiro</th>
+                      <th className="py-3 px-4">Personal que Retiró</th>
                       <th className="py-3 px-4 text-center">Piezas</th>
                       <th className="py-3 px-4 text-center">Estado</th>
-                      <th className="py-3 px-4 text-right">Documento</th>
+                      <th className="py-3 px-4 text-right">Acta Oficial</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     {despachosFiltrados.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-12 text-center text-slate-400">
-                          <i className="fas fa-truck text-3xl mb-2 block text-slate-300"></i>
-                          No hay registros de despachos aún. Haz clic en "Despachar" en la pestaña de Pedidos para generar el primero.
+                          <i className="fas fa-clipboard text-3xl mb-2 block text-slate-300"></i>
+                          No hay registros de retiros aún. Haz clic en "Retiro Mostrador" en la Gestión de Pedidos para generar el primer retiro con su acta en PDF.
                         </td>
                       </tr>
                     ) : (
@@ -930,22 +1102,22 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                           <td className="py-3 px-4 font-mono">{d.pedidoId}</td>
                           <td className="py-3 px-4 font-bold text-slate-800">{d.sucursalDestino}</td>
                           <td className="py-3 px-4 text-slate-600">
-                            <div>{d.fechaDespacho}</div>
-                            <div className="text-[11px] text-slate-400">{d.transportista} ({d.placaVehiculo})</div>
+                            <div className="font-semibold text-slate-800">{d.transportista}</div>
+                            <div className="text-[11px] text-slate-400">Fecha: {d.fechaDespacho} | Despachador: {d.despachadorCedis}</div>
                           </td>
                           <td className="py-3 px-4 text-center font-bold text-slate-900">{d.totalPiezas}</td>
                           <td className="py-3 px-4 text-center">
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                              {d.estadoEntrega}
+                              {d.estadoEntrega || 'ENTREGADO'}
                             </span>
                           </td>
                           <td className="py-3 px-4 text-right">
                             <button
-                              onClick={() => handleReDescargarGuiaDespacho(d)}
-                              className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded font-semibold text-xs transition-colors flex items-center gap-1.5 ml-auto"
+                              onClick={() => handleReDescargarActa(d)}
+                              className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded font-semibold text-xs transition-colors flex items-center gap-1.5 ml-auto shadow-sm"
                             >
                               <i className="fas fa-file-pdf"></i>
-                              <span>Descargar PDF</span>
+                              <span>Descargar Acta PDF</span>
                             </button>
                           </td>
                         </tr>
@@ -1261,171 +1433,289 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         )}
 
         {/* ========================================================================= */}
-        {/* VISTA 7: EQUIPO & SUCURSALES (Hoja BD_Encargados)                         */}
+        {/* VISTA 7: BD ENCARGADOS (Directorio Oficial de Sucursales y Asesores)       */}
         {/* ========================================================================= */}
         {vistaActiva === 'encargados' && (
           <div className="space-y-6">
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-              <div className="mb-6">
-                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                  <i className="fas fa-users-cog text-red-600"></i>
-                  Directorio de Sucursales y Encargados de Repuestos
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  Contacta directamente a los coordinadores y jefes de servicio de cada taller Changan en Panamá.
-                </p>
-              </div>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                    <i className="fas fa-address-book text-red-600"></i>
+                    BD Encargados - Directorio Oficial de Sucursales y Asesores
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Directorio corporativo oficial de asesores de repuestos, departamentos, coordinadores de taller y bodegueros de cada sucursal de Changan Panamá.
+                  </p>
+                </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {encargados.map((enc) => (
-                  <div
-                    key={enc.id}
-                    className="border border-slate-200 rounded-xl p-5 hover:border-red-400 transition-all shadow-sm hover:shadow-md bg-gradient-to-b from-white to-slate-50 flex flex-col justify-between"
+                {/* Alternador de Vista (Tabla vs Tarjetas) */}
+                <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl self-start md:self-auto border border-slate-200">
+                  <button
+                    onClick={() => setVistaEncargadosModo('tabla')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                      vistaEncargadosModo === 'tabla'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-900'
+                    }`}
                   >
-                    <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <span className="px-2.5 py-1 rounded-md text-xs font-black bg-red-100 text-red-800">
-                          {enc.sucursal}
-                        </span>
-                        <i className="fas fa-building text-slate-300 text-lg"></i>
-                      </div>
-
-                      <h3 className="font-bold text-base text-slate-900">{enc.nombre}</h3>
-                      <p className="text-xs font-medium text-slate-500 mb-3">{enc.cargo}</p>
-
-                      <div className="space-y-1.5 text-xs text-slate-600 mb-4">
-                        <div className="flex items-center gap-2">
-                          <i className="fas fa-phone text-slate-400 w-4"></i>
-                          <a href={`tel:${enc.telefono}`} className="hover:text-red-600 font-medium">
-                            {enc.telefono}
-                          </a>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <i className="fas fa-envelope text-slate-400 w-4"></i>
-                          <a href={`mailto:${enc.correo}`} className="hover:text-red-600 truncate">
-                            {enc.correo}
-                          </a>
-                        </div>
-                        {enc.direccion && (
-                          <div className="flex items-start gap-2 text-[11px] text-slate-400 mt-2">
-                            <i className="fas fa-map-marker-alt text-red-400 w-4 mt-0.5"></i>
-                            <span>{enc.direccion}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Botones de acción directa */}
-                    <div className="grid grid-cols-2 gap-2 pt-3 border-t border-slate-100">
-                      <a
-                        href={`https://wa.me/${enc.whatsapp || enc.telefono.replace(/[^0-9]/g, '')}?text=Hola%20${encodeURIComponent(enc.nombre)},%20te%20contacto%20desde%20CEDIS%20Central%20Changan`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-colors"
-                      >
-                        <i className="fab fa-whatsapp text-sm"></i>
-                        <span>WhatsApp</span>
-                      </a>
-
-                      <a
-                        href={`mailto:${enc.correo}?subject=Coordinaci%C3%B3n%20Log%C3%ADstica%20CEDIS%20Changan`}
-                        className="flex items-center justify-center gap-1.5 py-2 px-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold transition-colors"
-                      >
-                        <i className="fas fa-envelope text-xs"></i>
-                        <span>Correo</span>
-                      </a>
-                    </div>
-                  </div>
-                ))}
+                    <i className="fas fa-table"></i>
+                    <span>Vista Tabla</span>
+                  </button>
+                  <button
+                    onClick={() => setVistaEncargadosModo('tarjetas')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                      vistaEncargadosModo === 'tarjetas'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-900'
+                    }`}
+                  >
+                    <i className="fas fa-th-large"></i>
+                    <span>Tarjetas</span>
+                  </button>
+                </div>
               </div>
+
+              {/* Vista 1: Tabla Estructurada BD Encargados */}
+              {vistaEncargadosModo === 'tabla' && (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider text-[11px] border-b border-slate-200">
+                        <th className="py-3 px-4"># ID</th>
+                        <th className="py-3 px-4">Sucursal</th>
+                        <th className="py-3 px-4">Colaborador / Asesor</th>
+                        <th className="py-3 px-4">Departamento</th>
+                        <th className="py-3 px-4">Cargo Oficial</th>
+                        <th className="py-3 px-4">Teléfono Móvil</th>
+                        <th className="py-3 px-4 text-center">WhatsApp Directo</th>
+                        <th className="py-3 px-4">Correo Electrónico</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {encargados.map((enc) => (
+                        <tr key={enc.id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="py-3 px-4 font-mono font-bold text-slate-400">
+                            {enc.id}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-black bg-red-100 text-red-800">
+                              {enc.sucursal}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 font-bold text-slate-900 text-sm">
+                            {enc.nombre}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                              {enc.departamento || 'Taller / Mostrador'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-600 font-medium">
+                            {enc.cargo}
+                          </td>
+                          <td className="py-3 px-4 font-mono">
+                            <a href={`tel:${enc.telefono}`} className="text-slate-800 hover:text-red-600 font-semibold">
+                              {enc.telefono}
+                            </a>
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <a
+                              href={`https://wa.me/${enc.whatsapp || enc.telefono.replace(/[^0-9]/g, '')}?text=Hola%20${encodeURIComponent(enc.nombre)},%20te%20contacto%20desde%20CEDIS%20Central%20Changan`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-all shadow-sm"
+                            >
+                              <i className="fab fa-whatsapp"></i>
+                              <span>Chatear</span>
+                            </a>
+                          </td>
+                          <td className="py-3 px-4">
+                            {enc.correo ? (
+                              <a href={`mailto:${enc.correo}`} className="text-red-700 hover:underline">
+                                {enc.correo}
+                              </a>
+                            ) : (
+                              <span className="text-slate-400 italic">No asignado</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Vista 2: Tarjetas Grid */}
+              {vistaEncargadosModo === 'tarjetas' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {encargados.map((enc) => (
+                    <div
+                      key={enc.id}
+                      className="border border-slate-200 rounded-xl p-5 hover:border-red-400 transition-all shadow-sm hover:shadow-md bg-gradient-to-b from-white to-slate-50 flex flex-col justify-between"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="px-2.5 py-1 rounded-md text-xs font-black bg-red-100 text-red-800">
+                            {enc.sucursal}
+                          </span>
+                          <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded font-semibold border border-slate-200">
+                            {enc.departamento || 'Taller'}
+                          </span>
+                        </div>
+
+                        <h3 className="font-bold text-base text-slate-900">{enc.nombre}</h3>
+                        <p className="text-xs font-medium text-slate-500 mb-3">{enc.cargo}</p>
+
+                        <div className="space-y-1.5 text-xs text-slate-600 mb-4">
+                          <div className="flex items-center gap-2">
+                            <i className="fas fa-phone text-slate-400 w-4"></i>
+                            <a href={`tel:${enc.telefono}`} className="hover:text-red-600 font-medium">
+                              {enc.telefono}
+                            </a>
+                          </div>
+                          {enc.correo && (
+                            <div className="flex items-center gap-2">
+                              <i className="fas fa-envelope text-slate-400 w-4"></i>
+                              <a href={`mailto:${enc.correo}`} className="hover:text-red-600 truncate">
+                                {enc.correo}
+                              </a>
+                            </div>
+                          )}
+                          {enc.direccion && (
+                            <div className="flex items-start gap-2 text-[11px] text-slate-400 mt-2">
+                              <i className="fas fa-map-marker-alt text-red-400 w-4 mt-0.5"></i>
+                              <span>{enc.direccion}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Botones de acción directa */}
+                      <div className="grid grid-cols-2 gap-2 pt-3 border-t border-slate-100">
+                        <a
+                          href={`https://wa.me/${enc.whatsapp || enc.telefono.replace(/[^0-9]/g, '')}?text=Hola%20${encodeURIComponent(enc.nombre)},%20te%20contacto%20desde%20CEDIS%20Central%20Changan`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-colors shadow-sm"
+                        >
+                          <i className="fab fa-whatsapp text-sm"></i>
+                          <span>WhatsApp</span>
+                        </a>
+
+                        <a
+                          href={`mailto:${enc.correo || 'repuestos@changanpanama.com'}?subject=Coordinaci%C3%B3n%20Log%C3%ADstica%20CEDIS%20Changan`}
+                          className="flex items-center justify-center gap-1.5 py-2 px-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold transition-colors"
+                        >
+                          <i className="fas fa-envelope text-xs"></i>
+                          <span>Correo</span>
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
       </main>
 
       {/* ========================================================================= */}
-      {/* MODAL DE CONFIRMACIÓN DE DESPACHO & GENERACIÓN DE GUÍA PDF                */}
+      {/* MODAL DE CONFIRMACIÓN DE RETIRO EN MOSTRADOR CEDIS & ACTA PDF              */}
       {/* ========================================================================= */}
-      {modalDespachoAbierto && lineaADespachar && (
+      {modalRetiroAbierto && lineaARetirar && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center text-lg">
-                  <i className="fas fa-truck-loading"></i>
+                  <i className="fas fa-clipboard-check"></i>
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 text-base">Emitir Guía de Despacho</h3>
-                  <p className="text-xs text-slate-500">Genera el conduce oficial y descuenta stock</p>
+                  <h3 className="font-bold text-slate-900 text-base">Acta de Retiro en Mostrador CEDIS</h3>
+                  <p className="text-xs text-slate-500">Entrega presencial en Bodega Central (Sin camión)</p>
                 </div>
               </div>
               <button
-                onClick={() => setModalDespachoAbierto(false)}
+                onClick={() => setModalRetiroAbierto(false)}
                 className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg"
               >
                 <i className="fas fa-times text-lg"></i>
               </button>
             </div>
 
-            {/* Resumen del Repuesto */}
+            {/* Resumen del Repuesto a Retirar */}
             <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 mb-4 text-xs space-y-1.5">
               <div className="flex justify-between">
-                <span className="text-slate-500">Pedido ID:</span>
-                <span className="font-mono font-bold">{lineaADespachar.pedidoId}</span>
+                <span className="text-slate-500">Pedido ID / Folio:</span>
+                <span className="font-mono font-bold">{lineaARetirar.pedidoId}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">Sucursal Destino:</span>
-                <span className="font-bold text-red-700">{lineaADespachar.sucursal}</span>
+                <span className="text-slate-500">Sucursal que Retira:</span>
+                <span className="font-bold text-red-700">{lineaARetirar.sucursal}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Repuesto:</span>
-                <span className="font-mono font-bold text-cyan-700">{lineaADespachar.codigoRepuesto}</span>
+                <span className="font-mono font-bold text-cyan-700">{lineaARetirar.codigoRepuesto}</span>
               </div>
-              <div className="text-slate-600 truncate">{lineaADespachar.descripcionOficial}</div>
+              <div className="text-slate-600 truncate">{lineaARetirar.descripcionOficial}</div>
               <div className="flex justify-between pt-1 border-t border-slate-200 font-bold">
-                <span>Cantidad a despachar:</span>
-                <span className="text-emerald-700">{lineaADespachar.cantidadSolicitada} unidades</span>
+                <span>Cantidad a entregar:</span>
+                <span className="text-emerald-700">{lineaARetirar.cantidadSolicitada} unidades</span>
               </div>
             </div>
 
-            {/* Formulario de Transporte */}
+            {/* Formulario de Retiro */}
             <div className="space-y-3 mb-6">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Chofer / Transportista
+                  Nombre del Personal que Retira (Sucursal) *
                 </label>
                 <input
                   type="text"
-                  value={transportistaInput}
-                  onChange={e => setTransportistaInput(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="Ej: Transporte Interno CEDIS"
+                  value={personaQueRetiraInput}
+                  onChange={e => setPersonaQueRetiraInput(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+                  placeholder="Ej: Carlos Vega (Chofer / Mensajero de Sucursal)"
+                  autoFocus
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Placa / Unidad Vehicular
+                  Cédula / Documento de Identidad
                 </label>
                 <input
                   type="text"
-                  value={placaVehiculoInput}
-                  onChange={e => setPlacaVehiculoInput(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="Ej: CAMION-CEDIS-01"
+                  value={cedulaPersonaInput}
+                  onChange={e => setCedulaPersonaInput(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                  placeholder="Ej: 8-888-8888"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Observaciones / Instrucciones de Entrega
+                  Entregado por (Bodega Central CEDIS)
+                </label>
+                <input
+                  type="text"
+                  value={entregadorCedisInput}
+                  onChange={e => setEntregadorCedisInput(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium bg-slate-50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Observaciones / Inspección Física
                 </label>
                 <textarea
-                  value={observacionesInput}
-                  onChange={e => setObservacionesInput(e.target.value)}
+                  value={observacionesRetiroInput}
+                  onChange={e => setObservacionesRetiroInput(e.target.value)}
                   rows={2}
                   className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="Notas para el taller receptor..."
+                  placeholder="Mercancía revisada físicamente por la persona que retira..."
                 />
               </div>
             </div>
@@ -1433,18 +1723,18 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
             {/* Botones de acción */}
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
               <button
-                onClick={() => setModalDespachoAbierto(false)}
+                onClick={() => setModalRetiroAbierto(false)}
                 className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
               >
                 Cancelar
               </button>
 
               <button
-                onClick={handleConfirmarDespacho}
+                onClick={handleConfirmarRetiroCedis}
                 className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-md flex items-center gap-2"
               >
-                <i className="fas fa-file-pdf"></i>
-                <span>Confirmar y Descargar Guía PDF</span>
+                <i className="fas fa-clipboard-check"></i>
+                <span>Confirmar Entrega y Descargar Acta PDF</span>
               </button>
             </div>
           </div>

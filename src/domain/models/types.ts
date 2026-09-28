@@ -304,16 +304,16 @@ export interface DespachoRegistro {
   lineasJson?: string;
 }
 
-// ========== DIRECTORIO DE SUCURSALES Y ENCARGADOS ==========
+// ========== DIRECTORIO DE SUCURSALES Y ENCARGADOS (BD_Encargados) ==========
 export interface EncargadoSucursal {
-  id: string;
+  id: string | number;
   sucursal: string;
   nombre: string;
+  departamento: string;
   cargo: string;
   telefono: string;
-  whatsapp?: string;
   correo: string;
+  whatsapp?: string;
   direccion?: string;
-  horarioAtencion?: string;
 }
 
