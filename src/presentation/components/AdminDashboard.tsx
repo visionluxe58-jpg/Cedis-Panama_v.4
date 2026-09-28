@@ -7,39 +7,28 @@ import type { AuthState, DPLDetalle, DPLManifiesto, FilaRastreador } from '../..
 import { ModalRastreadorUniversal } from './ModalRastreadorUniversal';
 import { calcularKPIs, ejecutarMatchingFIFO } from '../../domain/services';
 import { CruceDPL } from './CruceDPL';
+import { ImportarDatosPanel } from './ImportarDatosPanel';
+import { 
+  obtenerAsesores, 
+  obtenerManifiestos, 
+  obtenerDetallesDPL, 
+  obtenerPedidos 
+} from '../../domain/services/importacionDatos';
 
 interface AdminDashboardProps {
   auth: AuthState;
   onLogout: () => void;
 }
 
-// Datos de demo
-const DEMO_INVENTARIO: DPLDetalle[] = [
-  { inventarioId: 'INV-001', contenedorId: 'CONT-2024-001', palletCaseNo: 'P001', packageNo: 'PKG-001', codigoRepuesto: '1422020-KC01', descripcion: 'Filtro de aceite motor', cantidadTotal: 100, cantidadAsignada: 30, cantidadDespachada: 20, saldoDisponible: 50, ubicacionCedis: 'CEDIS-A1-R1' },
-  { inventarioId: 'INV-002', contenedorId: 'CONT-2024-001', palletCaseNo: 'P001', packageNo: 'PKG-002', codigoRepuesto: '2213010-B01', descripcion: 'Pastillas de freno delanteras', cantidadTotal: 80, cantidadAsignada: 25, cantidadDespachada: 15, saldoDisponible: 40, ubicacionCedis: 'CEDIS-A1-R2' },
-  { inventarioId: 'INV-003', contenedorId: 'CONT-2024-002', palletCaseNo: 'P002', packageNo: 'PKG-001', codigoRepuesto: '3501010-B01', descripcion: 'Kit de correa de distribución', cantidadTotal: 60, cantidadAsignada: 20, cantidadDespachada: 10, saldoDisponible: 30, ubicacionCedis: 'CEDIS-B2-R1' },
-  { inventarioId: 'INV-004', contenedorId: 'CONT-2024-002', palletCaseNo: 'P002', packageNo: 'PKG-002', codigoRepuesto: '4611010-KC1', descripcion: 'Amortiguador delantero izquierdo', cantidadTotal: 40, cantidadAsignada: 15, cantidadDespachada: 8, saldoDisponible: 17, ubicacionCedis: 'CEDIS-B2-R2' },
-  { inventarioId: 'INV-005', contenedorId: 'CONT-2024-003', palletCaseNo: 'P003', packageNo: 'PKG-001', codigoRepuesto: '5201010-B01', descripcion: 'Bujías de ignición (set x4)', cantidadTotal: 200, cantidadAsignada: 80, cantidadDespachada: 50, saldoDisponible: 70, ubicacionCedis: 'CEDIS-C1-R1' }
-];
-
-const DEMO_MANIFIESTOS: DPLManifiesto[] = [
-  { contenedorId: 'CONT-2024-001', proveedor: 'Changan China Parts', fechaArribo: '2024-01-15', poReferencia: 'PO-2024-001', tipoTransporte: 'Marítimo 40HQ', totalPiezas: 180, skusUnicos: 2, totalPallets: 1, estado: 'RECIBIDO', creadoPor: 'Admin', creadoEn: '2024-01-10', blReferencia: 'BL-2024-001' },
-  { contenedorId: 'CONT-2024-002', proveedor: 'Changan China Parts', fechaArribo: '2024-01-20', poReferencia: 'PO-2024-002', tipoTransporte: 'Marítimo 40HQ', totalPiezas: 100, skusUnicos: 2, totalPallets: 1, estado: 'RECIBIDO', creadoPor: 'Admin', creadoEn: '2024-01-12', blReferencia: 'BL-2024-002' },
-  { contenedorId: 'CONT-2024-003', proveedor: 'Changan China Parts', fechaArribo: '2024-01-25', poReferencia: 'PO-2024-003', tipoTransporte: 'Marítimo 20GP', totalPiezas: 200, skusUnicos: 1, totalPallets: 1, estado: 'ADUANA', creadoPor: 'Admin', creadoEn: '2024-01-15', blReferencia: 'BL-2024-003' }
-];
-
-const DEMO_FILAS: FilaRastreador[] = [
-  { lineaId: 'LIN-001', pedidoId: 'PED-VL-001', codigoRepuesto: '1422020-KC01', descripcionOficial: 'Filtro de aceite motor', cantidadSolicitada: 10, cantidadAsignada: 10, cantidadDespachada: 5, estatusLinea: 'Asignado', contenedorAsignado: 'CONT-2024-001', palletAsignado: 'P001', packageNo: 'PKG-001', ubicacionCedis: 'CEDIS-A1-R1', sucursal: 'Villa Lucre', colaborador: 'Leidys Perez', cliente: 'María González', modeloChangan: 'CS35 Plus', numeroOR: 'OR-2024-001', vin: 'LS5A3ABR8NA000001' },
-  { lineaId: 'LIN-002', pedidoId: 'PED-TM-001', codigoRepuesto: '2213010-B01', descripcionOficial: 'Pastillas de freno delanteras', cantidadSolicitada: 8, cantidadAsignada: 8, cantidadDespachada: 8, estatusLinea: 'Despachado', contenedorAsignado: 'CONT-2024-001', palletAsignado: 'P001', packageNo: 'PKG-002', ubicacionCedis: 'CEDIS-A1-R2', sucursal: 'Tumba Muerto', colaborador: 'Ulisses Urriola', cliente: 'Juan Rodríguez', modeloChangan: 'CS55 Plus', numeroOR: 'OR-2024-002', vin: 'LS5A3ABR8NA000002' },
-  { lineaId: 'LIN-003', pedidoId: 'PED-C50-001', codigoRepuesto: '3501010-B01', descripcionOficial: 'Kit de correa de distribución', cantidadSolicitada: 5, cantidadAsignada: 5, cantidadDespachada: 0, estatusLinea: 'Asignado', contenedorAsignado: 'CONT-2024-002', palletAsignado: 'P002', packageNo: 'PKG-001', ubicacionCedis: 'CEDIS-B2-R1', sucursal: 'Calle 50', colaborador: 'Edilson Uribe', cliente: 'Ana Martínez', modeloChangan: 'UNI-K', numeroOR: 'OR-2024-003', vin: 'LS5A3ABR8NA000003' },
-  { lineaId: 'LIN-004', pedidoId: 'PED-CV-001', codigoRepuesto: '4611010-KC1', descripcionOficial: 'Amortiguador delantero izquierdo', cantidadSolicitada: 3, cantidadAsignada: 0, cantidadDespachada: 0, estatusLinea: 'Sin Stock', contenedorAsignado: '', palletAsignado: '', packageNo: '', ubicacionCedis: '', sucursal: 'Costa Verde', colaborador: 'Arquimedes Jordan', cliente: 'Pedro Sánchez', modeloChangan: 'CS75 Plus', numeroOR: 'OR-2024-004', vin: 'LS5A3ABR8NA000004' },
-  { lineaId: 'LIN-005', pedidoId: 'PED-CH-001', codigoRepuesto: '5201010-B01', descripcionOficial: 'Bujías de ignición (set x4)', cantidadSolicitada: 15, cantidadAsignada: 15, cantidadDespachada: 10, estatusLinea: 'Asignado', contenedorAsignado: 'CONT-2024-003', palletAsignado: 'P003', packageNo: 'PKG-001', ubicacionCedis: 'CEDIS-C1-R1', sucursal: 'Chiriquí', colaborador: 'Nivardo Gutierres', cliente: 'Laura Fernández', modeloChangan: 'Alsvin', numeroOR: 'OR-2024-005', vin: 'LS5A3ABR8NA000005' }
-];
+// Obtener datos desde localStorage (importados desde Google Sheets)
+const DEMO_INVENTARIO: DPLDetalle[] = obtenerDetallesDPL();
+const DEMO_MANIFIESTOS: DPLManifiesto[] = obtenerManifiestos();
+const DEMO_FILAS: FilaRastreador[] = obtenerPedidos();
 
 export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) {
   const [modalRastreadorAbierto, setModalRastreadorAbierto] = useState(false);
   const [codigoInicial, setCodigoInicial] = useState('');
-  const [vistaActiva, setVistaActiva] = useState<'dashboard' | 'kpis' | 'matching' | 'cruceDPL'>('dashboard');
+  const [vistaActiva, setVistaActiva] = useState<'dashboard' | 'kpis' | 'matching' | 'cruceDPL' | 'importar'>('dashboard');
   const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
 
   const handleAbrirRastreador = (codigo?: string) => {
@@ -117,6 +106,14 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
             }`}
           >
             <i className="fas fa-ship mr-2"></i>Gestión DPL
+          </button>
+          <button
+            onClick={() => setVistaActiva('importar')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              vistaActiva === 'importar' ? 'bg-red-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <i className="fas fa-database mr-2"></i>Importar Datos
           </button>
         </div>
 
@@ -435,6 +432,13 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 onAbrirRastreador={handleAbrirRastreador}
               />
             </div>
+          </div>
+        )}
+
+        {/* Vista Importar Datos */}
+        {vistaActiva === 'importar' && (
+          <div className="fade-in">
+            <ImportarDatosPanel />
           </div>
         )}
       </main>
