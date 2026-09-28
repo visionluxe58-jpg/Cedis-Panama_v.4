@@ -85,25 +85,90 @@ export function clasificarRepuesto(codigo: string, descripcion: string): Clasifi
 
 // ========== CÁLCULO DE KPIs ==========
 
-export function calcularKPIs(pedidos: any[], inventario: any[]) {
-  const totalPedidos = pedidos.length;
-  const totalLineas = pedidos.reduce((sum, p) => sum + (p.lineas?.length || 0), 0);
-  const totalPiezasSolicitadas = pedidos.reduce((sum, p) => {
-    return sum + (p.lineas?.reduce((s: number, l: any) => s + l.cantidad, 0) || 0);
-  }, 0);
-  
-  const piezasCubiertas = totalPiezasSolicitadas * 0.88; // Simulación
+export function calcularKPIs(pedidos: any[], inventario: any[] = []) {
+  if (!pedidos || pedidos.length === 0) {
+    return {
+      fillRate: 0,
+      otif: 92.5,
+      quiebreStock: 0,
+      tiempoCiclo: 36,
+      exactitudInventario: 98.2,
+      exactitudPicking: 99.1,
+      efectividadCruce: 85.3,
+      pedidoPerfecto: 89.7,
+      totalPedidos: 0,
+      totalLineas: 0,
+      totalPiezasSolicitadas: 0,
+      piezasCubiertas: 0
+    };
+  }
+
+  const pedidosUnicos = new Set<string>();
+  let totalLineas = 0;
+  let totalPiezasSolicitadas = 0;
+  let piezasCubiertas = 0;
+  let lineasSinStock = 0;
+
+  for (const p of pedidos) {
+    if (p.lineas && Array.isArray(p.lineas)) {
+      pedidosUnicos.add(p.folio || p.id || String(Math.random()));
+      totalLineas += p.lineas.length;
+      for (const l of p.lineas) {
+        const cant = Number(l.cantidad) || 0;
+        totalPiezasSolicitadas += cant;
+        const stock = (inventario || []).find((i: any) =>
+          (i.codigoRepuesto || '').trim().toUpperCase() === (l.codigoRepuesto || '').trim().toUpperCase()
+        );
+        const disp = Number(stock?.saldoDisponible) || 0;
+        if (disp >= cant) {
+          piezasCubiertas += cant;
+        } else if (disp > 0) {
+          piezasCubiertas += disp;
+        } else {
+          lineasSinStock++;
+        }
+      }
+    } else {
+      // FilaRastreador plana (de matriz_pedidos en Supabase)
+      const pedidoId = p.pedidoId || p.pedido_id || p.folio || 'PED-000';
+      pedidosUnicos.add(pedidoId);
+      totalLineas += 1;
+      const cantSol = Number(p.cantidadSolicitada ?? p.cantidad_solicitada ?? p.cantidad) || 0;
+      const cantAsig = Number(p.cantidadAsignada ?? p.cantidad_asignada) || 0;
+      totalPiezasSolicitadas += cantSol;
+      
+      if (cantAsig > 0) {
+        piezasCubiertas += cantAsig;
+      } else {
+        const cod = (p.codigoRepuesto || p.codigo_repuesto || '').trim().toUpperCase();
+        const stock = (inventario || []).find((i: any) =>
+          (i.codigoRepuesto || '').trim().toUpperCase() === cod
+        );
+        const disp = Number(stock?.saldoDisponible) || 0;
+        if (disp >= cantSol) {
+          piezasCubiertas += cantSol;
+        } else if (disp > 0) {
+          piezasCubiertas += disp;
+        } else {
+          lineasSinStock++;
+        }
+      }
+    }
+  }
+
+  const totalPedidos = pedidosUnicos.size;
   const fillRate = totalPiezasSolicitadas > 0 ? (piezasCubiertas / totalPiezasSolicitadas) * 100 : 0;
-  
+  const quiebreStock = totalLineas > 0 ? (lineasSinStock / totalLineas) * 100 : 0;
+
   return {
     fillRate: Math.round(fillRate * 10) / 10,
     otif: 92.5,
-    quiebreStock: 7.5,
+    quiebreStock: Math.round(quiebreStock * 10) / 10,
     tiempoCiclo: 36,
     exactitudInventario: 98.2,
     exactitudPicking: 99.1,
     efectividadCruce: 85.3,
-    pedidoPerfecto: 89.7,
+    pedidoPerfecto: Math.round(Math.max(0, 100 - quiebreStock) * 10) / 10,
     totalPedidos,
     totalLineas,
     totalPiezasSolicitadas: Math.round(totalPiezasSolicitadas),
@@ -115,52 +180,93 @@ export function calcularKPIs(pedidos: any[], inventario: any[]) {
 
 export function ejecutarMatchingFIFO(
   pedidos: any[],
-  inventario: any[]
+  inventario: any[] = []
 ): any {
   let asignadasTotales = 0;
   let asignadasParciales = 0;
   let sinStock = 0;
   let piezasAsignadas = 0;
-  
-  const detallesActualizados = pedidos.flatMap(p => 
-    p.lineas?.map((l: any) => {
-      const stock = inventario.find(i => i.codigoRepuesto === l.codigoRepuesto);
-      const disponible = stock?.saldoDisponible || 0;
-      
-      let estatus = 'Sin Stock';
-      let asignado = 0;
-      
-      if (disponible >= l.cantidad) {
-        asignado = l.cantidad;
-        estatus = 'Asignado';
-        asignadasTotales++;
-      } else if (disponible > 0) {
-        asignado = disponible;
-        estatus = 'Asignado Parcial';
-        asignadasParciales++;
-      } else {
-        sinStock++;
+
+  // Extraer líneas homogéneas para matching
+  const lineasParaMatching: Array<{
+    lineaId: string;
+    pedidoId: string;
+    codigoRepuesto: string;
+    descripcion: string;
+    cantidad: number;
+    yaAsignada?: number;
+    contenedorPrevio?: string;
+  }> = [];
+
+  for (const p of pedidos || []) {
+    if (p.lineas && Array.isArray(p.lineas)) {
+      for (const l of p.lineas) {
+        lineasParaMatching.push({
+          lineaId: l.lineaId || `LIN-${Math.random().toString().slice(-5)}`,
+          pedidoId: p.folio || 'PED-000',
+          codigoRepuesto: l.codigoRepuesto || '',
+          descripcion: l.descripcion || '',
+          cantidad: Number(l.cantidad) || 1,
+        });
       }
-      
-      piezasAsignadas += asignado;
-      
-      return {
-        lineaId: l.lineaId || `LIN-${Math.random()}`,
-        pedidoId: p.folio,
-        codigoRepuesto: l.codigoRepuesto,
-        descripcion: l.descripcion,
-        cantidadSolicitada: l.cantidad,
-        cantidadAsignada: asignado,
-        cantidadDespachada: 0,
-        contenedorAsignado: stock?.contenedorId || '',
-        palletAsignado: stock?.palletCaseNo || '',
-        packageNo: stock?.packageNo || '',
-        ubicacionCedis: stock?.ubicacionCedis || '',
-        estatusLinea: estatus
-      };
-    }) || []
-  );
-  
+    } else if (p.codigoRepuesto || p.codigo_repuesto) {
+      lineasParaMatching.push({
+        lineaId: p.lineaId || p.id || `LIN-${Math.random().toString().slice(-5)}`,
+        pedidoId: p.pedidoId || p.pedido_id || p.folio || 'PED-000',
+        codigoRepuesto: p.codigoRepuesto || p.codigo_repuesto || '',
+        descripcion: p.descripcionOficial || p.descripcion_oficial || p.descripcion || '',
+        cantidad: Number(p.cantidadSolicitada ?? p.cantidad_solicitada ?? p.cantidad) || 1,
+        yaAsignada: Number(p.cantidadAsignada ?? p.cantidad_asignada) || 0,
+        contenedorPrevio: p.contenedorAsignado || p.contenedor_asignado || '',
+      });
+    }
+  }
+
+  const detallesActualizados = lineasParaMatching.map(l => {
+    const cod = (l.codigoRepuesto || '').trim().toUpperCase();
+    const stock = (inventario || []).find((i: any) =>
+      (i.codigoRepuesto || '').trim().toUpperCase() === cod
+    );
+    const disponible = Number(stock?.saldoDisponible) || 0;
+
+    let estatus = 'Sin Stock';
+    let asignado = 0;
+
+    if (disponible >= l.cantidad) {
+      asignado = l.cantidad;
+      estatus = 'Asignado';
+      asignadasTotales++;
+    } else if (disponible > 0) {
+      asignado = disponible;
+      estatus = 'Asignado Parcial';
+      asignadasParciales++;
+    } else if (l.yaAsignada && l.yaAsignada > 0) {
+      asignado = l.yaAsignada;
+      estatus = l.yaAsignada >= l.cantidad ? 'Asignado' : 'Asignado Parcial';
+      if (estatus === 'Asignado') asignadasTotales++;
+      else asignadasParciales++;
+    } else {
+      sinStock++;
+    }
+
+    piezasAsignadas += asignado;
+
+    return {
+      lineaId: l.lineaId,
+      pedidoId: l.pedidoId,
+      codigoRepuesto: l.codigoRepuesto,
+      descripcion: l.descripcion,
+      cantidadSolicitada: l.cantidad,
+      cantidadAsignada: asignado,
+      cantidadDespachada: 0,
+      contenedorAsignado: stock?.contenedorId || l.contenedorPrevio || '',
+      palletAsignado: stock?.palletCaseNo || '',
+      packageNo: stock?.packageNo || '',
+      ubicacionCedis: stock?.ubicacionCedis || '',
+      estatusLinea: estatus
+    };
+  });
+
   return {
     success: true,
     totalLineas: detallesActualizados.length,
@@ -172,7 +278,7 @@ export function ejecutarMatchingFIFO(
     palletsInvolucrados: [...new Set(detallesActualizados.map(d => d.palletAsignado).filter(Boolean))],
     contenedoresInvolucrados: [...new Set(detallesActualizados.map(d => d.contenedorAsignado).filter(Boolean))],
     detalles: detallesActualizados,
-    mensaje: `Matching completado: ${piezasAsignadas} piezas asignadas`,
+    mensaje: `Matching completado: ${piezasAsignadas} piezas asignadas de ${detallesActualizados.length} líneas`,
     timestamp: new Date().toISOString()
   };
 }

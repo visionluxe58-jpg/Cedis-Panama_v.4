@@ -10,6 +10,8 @@ import { CruceDPL } from './CruceDPL';
 import {
   isSupabaseConfigured,
   obtenerFilasAdminSupabase,
+  obtenerManifiestosSupabase,
+  obtenerDetalleInventarioSupabase,
   suscribirCambiosPedidosSupabase,
 } from '../../data/api/supabaseClient';
 
@@ -18,7 +20,7 @@ interface AdminDashboardProps {
   onLogout: () => void;
 }
 
-// Datos de demo
+// Datos de demo para fallback si las tablas de Supabase están aún vacías
 const DEMO_INVENTARIO: DPLDetalle[] = [
   { inventarioId: 'INV-001', contenedorId: 'CONT-2024-001', palletCaseNo: 'P001', packageNo: 'PKG-001', codigoRepuesto: '1422020-KC01', descripcion: 'Filtro de aceite motor', cantidadTotal: 100, cantidadAsignada: 30, cantidadDespachada: 20, saldoDisponible: 50, ubicacionCedis: 'CEDIS-A1-R1' },
   { inventarioId: 'INV-002', contenedorId: 'CONT-2024-001', palletCaseNo: 'P001', packageNo: 'PKG-002', codigoRepuesto: '2213010-B01', descripcion: 'Pastillas de freno delanteras', cantidadTotal: 80, cantidadAsignada: 25, cantidadDespachada: 15, saldoDisponible: 40, ubicacionCedis: 'CEDIS-A1-R2' },
@@ -47,27 +49,62 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   const [vistaActiva, setVistaActiva] = useState<'dashboard' | 'kpis' | 'matching' | 'cruceDPL'>('dashboard');
   const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
 
-  // Estado reactivo para pedidos y conexión en tiempo real
+  // Estado reactivo centralizado con Supabase
   const [filas, setFilas] = useState<FilaRastreador[]>(DEMO_FILAS);
+  const [inventario, setInventario] = useState<DPLDetalle[]>(DEMO_INVENTARIO);
+  const [manifiestos, setManifiestos] = useState<DPLManifiesto[]>(DEMO_MANIFIESTOS);
   const [isLive, setIsLive] = useState<boolean>(isSupabaseConfigured());
   const [cargando, setCargando] = useState<boolean>(false);
+  const [ultimoSync, setUltimoSync] = useState<string>('');
+  const [registrosCargados, setRegistrosCargados] = useState({
+    pedidos: 0,
+    inventario: 0,
+    manifiestos: 0,
+    usandoDatosReales: false,
+  });
 
-  useEffect(() => {
+  const cargarDatos = async () => {
     if (!isSupabaseConfigured()) return;
+    setCargando(true);
+    try {
+      const [realFilas, realManifiestos, realInventario] = await Promise.all([
+        obtenerFilasAdminSupabase(),
+        obtenerManifiestosSupabase(),
+        obtenerDetalleInventarioSupabase(),
+      ]);
 
-    const cargarDatos = async () => {
-      setCargando(true);
-      const realFilas = await obtenerFilasAdminSupabase();
-      if (realFilas && realFilas.length > 0) {
-        setFilas(realFilas);
+      const hayFilas = realFilas && realFilas.length > 0;
+      const hayManifiestos = realManifiestos && realManifiestos.length > 0;
+      const hayInventario = realInventario && realInventario.length > 0;
+
+      if (hayFilas) setFilas(realFilas);
+      if (hayManifiestos) setManifiestos(realManifiestos);
+      if (hayInventario) setInventario(realInventario);
+
+      const usandoReales = hayFilas || hayManifiestos || hayInventario;
+      if (usandoReales) {
         setIsLive(true);
       }
-      setCargando(false);
-    };
 
+      setRegistrosCargados({
+        pedidos: hayFilas ? realFilas.length : 0,
+        manifiestos: hayManifiestos ? realManifiestos.length : 0,
+        inventario: hayInventario ? realInventario.length : 0,
+        usandoDatosReales: Boolean(usandoReales),
+      });
+
+      setUltimoSync(new Date().toLocaleTimeString('es-PA'));
+    } catch (err) {
+      console.error('Error cargando datos de Supabase en Admin:', err);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  useEffect(() => {
     cargarDatos();
 
-    // Suscripción a cambios en tiempo real
+    // Suscripción a cambios en tiempo real en Supabase
     const desuscribir = suscribirCambiosPedidosSupabase(() => {
       cargarDatos();
     });
@@ -87,26 +124,28 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     setCodigoInicial('');
   };
 
-  const kpis = calcularKPIs(filas, DEMO_INVENTARIO);
-  const matchingResult = ejecutarMatchingFIFO(filas, DEMO_INVENTARIO);
+  const kpis = calcularKPIs(filas, inventario);
+  const matchingResult = ejecutarMatchingFIFO(filas, inventario);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header */}
       <header className="bg-gradient-to-r from-red-700 to-red-900 text-white shadow-lg">
         <div className="max-w-7xl mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-3">
               <div className="w-12 h-12 bg-white/10 rounded-lg flex items-center justify-center">
                 <i className="fas fa-user-shield text-2xl"></i>
               </div>
               <div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <h1 className="text-xl font-bold">Panel de Administración</h1>
                   <span
                     className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                      isLive
+                      registrosCargados.usandoDatosReales
                         ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/30'
+                        : isLive
+                        ? 'bg-sky-500/20 text-sky-200 border border-sky-500/30'
                         : 'bg-amber-500/20 text-amber-200 border border-amber-500/30'
                     }`}
                   >
@@ -115,14 +154,36 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                         isLive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
                       }`}
                     ></span>
-                    {isLive ? 'Supabase en Vivo' : 'Modo Demo'}
+                    {registrosCargados.usandoDatosReales
+                      ? `Supabase en Vivo (${registrosCargados.pedidos} pedidos, ${registrosCargados.inventario} repuestos)`
+                      : isLive
+                      ? 'Supabase Conectado (Esperando datos)'
+                      : 'Modo Demo'}
                   </span>
                 </div>
                 <p className="text-sm text-red-200">CEDIS Changan Panamá</p>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="text-right">
+
+            <div className="flex items-center gap-3">
+              {/* Botón de Sincronización Manual */}
+              <button
+                onClick={cargarDatos}
+                disabled={cargando}
+                className="flex items-center gap-2 px-3.5 py-2 bg-white/15 hover:bg-white/25 active:bg-white/30 rounded-lg text-xs font-semibold transition-all border border-white/20 disabled:opacity-50 shadow-sm"
+                title="Actualizar datos directamente desde Supabase"
+              >
+                <i className={`fas fa-sync-alt ${cargando ? 'animate-spin text-cyan-300' : 'text-white'}`}></i>
+                <span>{cargando ? 'Sincronizando...' : 'Sincronizar'}</span>
+              </button>
+
+              {ultimoSync && (
+                <span className="text-[11px] text-red-200 hidden lg:inline">
+                  Sinc: {ultimoSync}
+                </span>
+              )}
+
+              <div className="text-right hidden sm:block border-l border-white/20 pl-3 ml-1">
                 <p className="text-sm font-medium">{auth.nombre}</p>
                 <p className="text-xs text-red-200">{auth.email}</p>
               </div>
@@ -181,6 +242,9 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                   <div>
                     <p className="text-sm font-medium text-gray-500">Total Pedidos</p>
                     <p className="text-3xl font-bold text-gray-900 mt-2">{kpis.totalPedidos}</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {registrosCargados.pedidos > 0 ? `${registrosCargados.pedidos} líneas en Supabase` : `${filas.length} líneas cargadas`}
+                    </p>
                   </div>
                   <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
                     <i className="fas fa-file-alt text-blue-600 text-xl"></i>
@@ -192,7 +256,12 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-500">Inventario DPL</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-2">{DEMO_INVENTARIO.reduce((sum, i) => sum + i.cantidadTotal, 0)}</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-2">
+                      {inventario.reduce((sum, i) => sum + i.cantidadTotal, 0)}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {registrosCargados.inventario > 0 ? `${registrosCargados.inventario} SKUs en Supabase` : `${inventario.length} ítems en almacén`}
+                    </p>
                   </div>
                   <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                     <i className="fas fa-boxes text-green-600 text-xl"></i>
@@ -204,7 +273,10 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-500">Contenedores</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-2">{DEMO_MANIFIESTOS.length}</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-2">{manifiestos.length}</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {registrosCargados.manifiestos > 0 ? `${registrosCargados.manifiestos} en Supabase` : `${manifiestos.length} manifiestos DPL`}
+                    </p>
                   </div>
                   <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
                     <i className="fas fa-ship text-purple-600 text-xl"></i>
@@ -216,7 +288,10 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-500">Sucursales</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-2">5</p>
+                    <p className="text-3xl font-bold text-gray-900 mt-2">
+                      {new Set(filas.map(f => f.sucursal).filter(Boolean)).size || 5}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">Red CEDIS Panamá</p>
                   </div>
                   <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
                     <i className="fas fa-building text-orange-600 text-xl"></i>
@@ -493,13 +568,13 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         )}
       </main>
 
-      {/* Modal Rastreador */}
+      {/* Modal Rastreador Universal */}
       <ModalRastreadorUniversal
         isOpen={modalRastreadorAbierto}
         onClose={handleCerrarRastreador}
         filas={filas}
-        inventario={DEMO_INVENTARIO}
-        manifiestos={DEMO_MANIFIESTOS}
+        inventario={inventario}
+        manifiestos={manifiestos}
         codigoInicial={codigoInicial}
       />
     </div>

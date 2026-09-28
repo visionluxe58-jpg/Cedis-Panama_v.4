@@ -171,6 +171,25 @@ export async function guardarPedidoSupabase(payload: {
 }
 
 /**
+ * Busca de forma insensible a mayúsculas, espacios y acentos
+ * para tolerar importaciones directas de CSV o diferencias de esquema en Supabase
+ */
+export function getField(obj: any, candidates: string[]): any {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const keys = Object.keys(obj);
+  for (const candidate of candidates) {
+    const normCandidate = candidate.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+    for (const key of keys) {
+      const normKey = key.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+      if (normKey === normCandidate && obj[key] !== undefined && obj[key] !== null && obj[key] !== '') {
+        return obj[key];
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Obtiene todas las filas de matriz_pedidos para el Panel de Administrador y Rastreador
  */
 export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
@@ -179,36 +198,80 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
   }
 
   try {
-    const { data, error } = await supabase
+    // 1. Intentar cargar desde matriz_pedidos
+    let { data, error } = await supabase
       .from('matriz_pedidos')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('*');
 
-    if (error || !data) {
-      console.error('Error cargando matriz_pedidos:', error);
-      return [];
+    // Fallback a matriz_central si matriz_pedidos falló o está vacía
+    if ((error || !data || data.length === 0)) {
+      const respCentral = await supabase.from('matriz_central').select('*');
+      if (!respCentral.error && respCentral.data && respCentral.data.length > 0) {
+        data = respCentral.data;
+        error = null;
+      }
     }
 
-    return data.map((item: any) => ({
-      lineaId: item.id,
-      pedidoId: item.pedido_id,
-      codigoRepuesto: item.codigo_repuesto,
-      descripcionOficial: item.descripcion_oficial,
-      cantidadSolicitada: item.cantidad_solicitada || 0,
-      cantidadAsignada: item.cantidad_asignada || 0,
-      cantidadDespachada: item.cantidad_despachada || 0,
-      estatusLinea: item.estatus_linea || 'Pendiente',
-      contenedorAsignado: item.contenedor_asignado || '',
-      palletAsignado: item.pallet_asignado || '',
-      packageNo: item.package_no || '',
-      ubicacionCedis: item.ubicacion_cedis || '',
-      sucursal: item.sucursal || 'Desconocida',
-      colaborador: item.colaborador || 'Asesor',
-      cliente: item.cliente || 'Consumidor Final',
-      modeloChangan: item.modelo_changan || 'No especificado',
-      numeroOR: item.cotizacion_numero_or || '',
-      vin: item.vin || '',
-    }));
+    if (!error && data && data.length > 0) {
+      return data.map((item: any) => ({
+        lineaId: String(getField(item, ['linea_id', 'id', 'lineaId']) || `LIN-${Math.random().toString().slice(-6)}`),
+        pedidoId: String(getField(item, ['pedido_id', 'id_pedido', 'pedido', 'folio']) || ''),
+        codigoRepuesto: String(getField(item, ['codigo_repuesto', 'codigo', 'cod_repuesto', 'part_number']) || ''),
+        descripcionOficial: String(getField(item, ['descripcion_oficial', 'descripcion', 'repuesto']) || ''),
+        cantidadSolicitada: Number(getField(item, ['cantidad_solicitada', 'cantidad', 'cant_solicitada', 'solicitado'])) || 0,
+        cantidadAsignada: Number(getField(item, ['cantidad_asignada', 'asignada', 'cant_asignada'])) || 0,
+        cantidadDespachada: Number(getField(item, ['cantidad_despachada', 'despachada', 'cant_despachada'])) || 0,
+        estatusLinea: String(getField(item, ['estatus_linea', 'estatus', 'estado']) || 'Pendiente'),
+        contenedorAsignado: String(getField(item, ['contenedor_asignado', 'contenedor', 'contenedor_id']) || ''),
+        palletAsignado: String(getField(item, ['pallet_asignado', 'pallet', 'pallet_case_no']) || ''),
+        packageNo: String(getField(item, ['package_no', 'paquete', 'package']) || ''),
+        ubicacionCedis: String(getField(item, ['ubicacion_cedis', 'ubicacion']) || ''),
+        sucursal: String(getField(item, ['sucursal', 'sucursal_destino', 'sucursalorigen']) || 'Villa Lucre'),
+        colaborador: String(getField(item, ['colaborador', 'asesor', 'creado_por', 'usuario']) || 'Asesor'),
+        cliente: String(getField(item, ['cliente', 'nombre_cliente']) || 'Consumidor Final'),
+        modeloChangan: String(getField(item, ['modelo_changan', 'modelo', 'vehiculo']) || 'Changan'),
+        numeroOR: String(getField(item, ['cotizacion_numero_or', 'numero_or', 'or', 'no_cotizacion', 'cotizacion']) || ''),
+        vin: String(getField(item, ['vin', 'chasis']) || ''),
+      }));
+    }
+
+    // 2. Si las tablas matriz estuvieran vacías, intentar desde lineas_pedido y pedidos
+    const { data: lineas, error: lineasError } = await supabase
+      .from('lineas_pedido')
+      .select(`
+        id, folio, codigo_repuesto, descripcion, cantidad,
+        cantidad_asignada, cantidad_despachada, estatus_linea,
+        contenedor_asignado, pallet_asignado, package_no, ubicacion_cedis,
+        pedidos (sucursal, colaborador, cliente, modelo_changan, vin, no_cotizacion)
+      `);
+
+    if (!lineasError && lineas && lineas.length > 0) {
+      return lineas.map((item: any) => {
+        const p = item.pedidos || {};
+        return {
+          lineaId: String(item.id),
+          pedidoId: String(item.folio || ''),
+          codigoRepuesto: String(item.codigo_repuesto || ''),
+          descripcionOficial: String(item.descripcion || ''),
+          cantidadSolicitada: Number(item.cantidad) || 0,
+          cantidadAsignada: Number(item.cantidad_asignada) || 0,
+          cantidadDespachada: Number(item.cantidad_despachada) || 0,
+          estatusLinea: String(item.estatus_linea || 'Pendiente'),
+          contenedorAsignado: String(item.contenedor_asignado || ''),
+          palletAsignado: String(item.pallet_asignado || ''),
+          packageNo: String(item.package_no || ''),
+          ubicacionCedis: String(item.ubicacion_cedis || ''),
+          sucursal: String(p.sucursal || 'Desconocida'),
+          colaborador: String(p.colaborador || 'Asesor'),
+          cliente: String(p.cliente || 'Consumidor Final'),
+          modeloChangan: String(p.modelo_changan || 'No especificado'),
+          numeroOR: String(p.no_cotizacion || ''),
+          vin: String(p.vin || ''),
+        };
+      });
+    }
+
+    return [];
   } catch (err) {
     console.error('Error en obtenerFilasAdminSupabase:', err);
     return [];
@@ -221,27 +284,36 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
 export async function obtenerManifiestosSupabase(): Promise<DPLManifiesto[]> {
   if (!supabase || !isSupabaseConfigured()) return [];
   try {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('dpl_manifiestos')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('*');
 
-    if (error || !data) return [];
+    if (error || !data || data.length === 0) {
+      const respSingular = await supabase.from('dpl_manifiesto').select('*');
+      if (!respSingular.error && respSingular.data && respSingular.data.length > 0) {
+        data = respSingular.data;
+        error = null;
+      }
+    }
+
+    if (error || !data || data.length === 0) return [];
+
     return data.map((m: any) => ({
-      contenedorId: m.contenedor_id,
-      proveedor: m.proveedor || '',
-      fechaArribo: m.fecha_arribo || '',
-      poReferencia: m.po_referencia || '',
-      tipoTransporte: m.tipo_transporte || '',
-      totalPiezas: m.total_piezas || 0,
-      skusUnicos: m.skus_unicos || 0,
-      totalPallets: m.total_pallets || 0,
-      estado: m.estado || 'EN TRÁNSITO',
-      creadoPor: m.creado_por || '',
-      creadoEn: m.creado_en || '',
-      blReferencia: m.bl_referencia || '',
+      contenedorId: String(getField(m, ['contenedor_id', 'contenedor', 'id_contenedor', 'container_id']) || ''),
+      proveedor: String(getField(m, ['proveedor', 'vendor']) || 'Changan China Parts'),
+      fechaArribo: String(getField(m, ['fecha_arribo', 'fecha', 'eta', 'fecha_llegada']) || ''),
+      poReferencia: String(getField(m, ['po_referencia', 'po', 'referencia_po']) || ''),
+      tipoTransporte: String(getField(m, ['tipo_transporte', 'transporte', 'tipo']) || 'Marítimo 40HQ'),
+      totalPiezas: Number(getField(m, ['total_piezas', 'piezas', 'total_items'])) || 0,
+      skusUnicos: Number(getField(m, ['skus_unicos', 'skus', 'total_skus'])) || 0,
+      totalPallets: Number(getField(m, ['total_pallets', 'pallets', 'bultos'])) || 0,
+      estado: (getField(m, ['estado', 'estatus']) || 'EN TRÁNSITO').toUpperCase() as any,
+      creadoPor: String(getField(m, ['creado_por', 'usuario']) || 'Admin'),
+      creadoEn: String(getField(m, ['creado_en', 'created_at', 'fecha_creacion']) || ''),
+      blReferencia: String(getField(m, ['bl_referencia', 'bl', 'bill_of_lading']) || ''),
     }));
-  } catch {
+  } catch (err) {
+    console.error('Error en obtenerManifiestosSupabase:', err);
     return [];
   }
 }
@@ -252,47 +324,62 @@ export async function obtenerManifiestosSupabase(): Promise<DPLManifiesto[]> {
 export async function obtenerDetalleInventarioSupabase(): Promise<DPLDetalle[]> {
   if (!supabase || !isSupabaseConfigured()) return [];
   try {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('dpl_detalle')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('*');
 
-    if (error || !data) return [];
-    return data.map((d: any) => ({
-      inventarioId: d.inventario_id,
-      contenedorId: d.contenedor_id,
-      palletCaseNo: d.pallet_case_no || '',
-      packageNo: d.package_no || '',
-      codigoRepuesto: d.codigo_repuesto,
-      descripcion: d.descripcion,
-      cantidadTotal: d.cantidad_total || 0,
-      cantidadAsignada: d.cantidad_asignada || 0,
-      cantidadDespachada: d.cantidad_despachada || 0,
-      saldoDisponible: d.saldo_disponible || 0,
-      ubicacionCedis: d.ubicacion_cedis || '',
-    }));
-  } catch {
+    if (error || !data || data.length === 0) {
+      const respPlural = await supabase.from('dpl_detalles').select('*');
+      if (!respPlural.error && respPlural.data && respPlural.data.length > 0) {
+        data = respPlural.data;
+        error = null;
+      }
+    }
+
+    if (error || !data || data.length === 0) return [];
+
+    return data.map((d: any) => {
+      const cantidadTotal = Number(getField(d, ['cantidad_total', 'total', 'cantidad', 'piezas'])) || 0;
+      const cantidadAsignada = Number(getField(d, ['cantidad_asignada', 'asignada'])) || 0;
+      const saldoDisponible = getField(d, ['saldo_disponible', 'saldo', 'disponible']) !== undefined
+        ? Number(getField(d, ['saldo_disponible', 'saldo', 'disponible']))
+        : (cantidadTotal - cantidadAsignada);
+
+      return {
+        inventarioId: String(getField(d, ['inventario_id', 'id', 'item_id']) || `INV-${Math.random().toString().slice(-6)}`),
+        contenedorId: String(getField(d, ['contenedor_id', 'contenedor', 'container_id']) || ''),
+        palletCaseNo: String(getField(d, ['pallet_case_no', 'pallet', 'case_no']) || ''),
+        packageNo: String(getField(d, ['package_no', 'paquete', 'pkg_no']) || ''),
+        codigoRepuesto: String(getField(d, ['codigo_repuesto', 'codigo', 'part_number']) || ''),
+        descripcion: String(getField(d, ['descripcion', 'repuesto', 'descripcion_oficial']) || ''),
+        cantidadTotal,
+        cantidadAsignada,
+        cantidadDespachada: Number(getField(d, ['cantidad_despachada', 'despachada'])) || 0,
+        saldoDisponible: saldoDisponible >= 0 ? saldoDisponible : 0,
+        ubicacionCedis: String(getField(d, ['ubicacion_cedis', 'ubicacion']) || ''),
+      };
+    });
+  } catch (err) {
+    console.error('Error en obtenerDetalleInventarioSupabase:', err);
     return [];
   }
 }
 
 /**
- * Se suscribe en tiempo real a matriz_pedidos
+ * Se suscribe en tiempo real a matriz_pedidos y tablas de inventario
  */
-export function suscribirCambiosPedidosSupabase(onNuevoPedido: () => void): () => void {
+export function suscribirCambiosPedidosSupabase(onActualizar: () => void): () => void {
   if (!supabase || !isSupabaseConfigured()) {
     return () => {};
   }
 
   const channel = supabase
-    .channel('cambios_matriz_admin')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'matriz_pedidos' },
-      () => {
-        onNuevoPedido();
-      }
-    )
+    .channel('cambios_sistema_admin')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'matriz_pedidos' }, () => onActualizar())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'dpl_manifiestos' }, () => onActualizar())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'dpl_detalle' }, () => onActualizar())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, () => onActualizar())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'lineas_pedido' }, () => onActualizar())
     .subscribe();
 
   return () => {
