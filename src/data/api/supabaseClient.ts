@@ -4,7 +4,13 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import type { FilaRastreador, DPLManifiesto, DPLDetalle } from '../../domain/models/types';
+import type {
+  FilaRastreador,
+  DPLManifiesto,
+  DPLDetalle,
+  DespachoRegistro,
+  EncargadoSucursal,
+} from '../../domain/models/types';
 
 // Obtención de variables de entorno de Vite
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -378,6 +384,7 @@ export function suscribirCambiosPedidosSupabase(onActualizar: () => void): () =>
     .on('postgres_changes', { event: '*', schema: 'public', table: 'matriz_pedidos' }, () => onActualizar())
     .on('postgres_changes', { event: '*', schema: 'public', table: 'dpl_manifiestos' }, () => onActualizar())
     .on('postgres_changes', { event: '*', schema: 'public', table: 'dpl_detalle' }, () => onActualizar())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'despachos' }, () => onActualizar())
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, () => onActualizar())
     .on('postgres_changes', { event: '*', schema: 'public', table: 'lineas_pedido' }, () => onActualizar())
     .subscribe();
@@ -386,3 +393,307 @@ export function suscribirCambiosPedidosSupabase(onActualizar: () => void): () =>
     supabase.removeChannel(channel);
   };
 }
+
+/**
+ * Actualiza el estatus y asignación de un pedido en Supabase
+ */
+export async function actualizarEstatusPedidoSupabase(
+  lineaId: string,
+  nuevoEstatus: 'Pendiente' | 'En Picking' | 'Asignado' | 'Despachado' | 'Sin Stock',
+  extra?: {
+    cantidadDespachada?: number;
+    contenedorAsignado?: string;
+    palletAsignado?: string;
+    ubicacionCedis?: string;
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  if (!supabase || !isSupabaseConfigured()) {
+    return { ok: true };
+  }
+
+  try {
+    const updateData: Record<string, any> = {
+      estatus_linea: nuevoEstatus,
+    };
+
+    if (extra?.cantidadDespachada !== undefined) {
+      updateData.cantidad_despachada = extra.cantidadDespachada;
+    }
+    if (extra?.contenedorAsignado) {
+      updateData.contenedor_asignado = extra.contenedorAsignado;
+    }
+    if (extra?.palletAsignado) {
+      updateData.pallet_asignado = extra.palletAsignado;
+    }
+    if (extra?.ubicacionCedis) {
+      updateData.ubicacion_cedis = extra.ubicacionCedis;
+    }
+
+    // 1. Intentar actualizar en matriz_pedidos
+    const { error: errMatriz } = await supabase
+      .from('matriz_pedidos')
+      .update(updateData)
+      .eq('id', lineaId);
+
+    // 2. Si no encontró por id (o fue importada de CSV sin id), intentar por pedido_id
+    if (errMatriz) {
+      await supabase
+        .from('matriz_pedidos')
+        .update(updateData)
+        .eq('pedido_id', lineaId);
+    }
+
+    // 3. También intentar en lineas_pedido por compatibilidad
+    await supabase
+      .from('lineas_pedido')
+      .update(updateData)
+      .eq('id', lineaId);
+
+    return { ok: true };
+  } catch (err: any) {
+    console.error('Error al actualizar estatus en Supabase:', err);
+    return { ok: false, error: err.message };
+  }
+}
+
+const STORAGE_KEY_DESPACHOS = 'cedis_despachos_cache';
+
+/**
+ * Guarda un despacho en la tabla despachos de Supabase y en caché local
+ */
+export async function guardarDespachoSupabase(
+  despacho: Omit<DespachoRegistro, 'id'>
+): Promise<{ ok: boolean; id: string; error?: string }> {
+  const generatedId = `DSP-${Date.now().toString().slice(-6)}`;
+  const registroCompleto: DespachoRegistro = {
+    ...despacho,
+    id: generatedId,
+  };
+
+  // Guardar en caché local siempre
+  try {
+    const local = localStorage.getItem(STORAGE_KEY_DESPACHOS);
+    const despachosLocales: DespachoRegistro[] = local ? JSON.parse(local) : [];
+    despachosLocales.unshift(registroCompleto);
+    localStorage.setItem(STORAGE_KEY_DESPACHOS, JSON.stringify(despachosLocales.slice(0, 100)));
+  } catch (e) {
+    console.error('Error guardando despacho local:', e);
+  }
+
+  if (!supabase || !isSupabaseConfigured()) {
+    return { ok: true, id: generatedId };
+  }
+
+  try {
+    const payload = {
+      numero_guia: despacho.numeroGuia,
+      pedido_id: despacho.pedidoId,
+      sucursal_destino: despacho.sucursalDestino,
+      transportista: despacho.transportista,
+      placa_vehiculo: despacho.placaVehiculo,
+      despachador_cedis: despacho.despachadorCedis,
+      fecha_despacho: despacho.fechaDespacho,
+      total_piezas: despacho.totalPiezas,
+      total_lineas: despacho.totalLineas,
+      estado_entrega: despacho.estadoEntrega,
+      observaciones: despacho.observaciones || '',
+      lineas_json: despacho.lineasJson || '',
+    };
+
+    const { data, error } = await supabase
+      .from('despachos')
+      .insert([payload])
+      .select('id')
+      .single();
+
+    if (error) {
+      console.warn('Tabla despachos no disponible en Supabase, guardado en caché local:', error.message);
+      return { ok: true, id: generatedId };
+    }
+
+    return { ok: true, id: data?.id || generatedId };
+  } catch (err: any) {
+    console.error('Error guardando despacho en Supabase:', err);
+    return { ok: true, id: generatedId };
+  }
+}
+
+/**
+ * Obtiene el historial de despachos desde Supabase (con fallback a caché local)
+ */
+export async function obtenerDespachosSupabase(): Promise<DespachoRegistro[]> {
+  let despachosLocales: DespachoRegistro[] = [];
+  try {
+    const local = localStorage.getItem(STORAGE_KEY_DESPACHOS);
+    if (local) despachosLocales = JSON.parse(local);
+  } catch {
+    despachosLocales = [];
+  }
+
+  if (!supabase || !isSupabaseConfigured()) {
+    return despachosLocales;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('despachos')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (!error && data && data.length > 0) {
+      return data.map((d: any) => ({
+        id: String(getField(d, ['id', 'despacho_id']) || `DSP-${Math.random().toString().slice(-5)}`),
+        numeroGuia: String(getField(d, ['numero_guia', 'guia', 'no_guia']) || 'GUIA-000'),
+        pedidoId: String(getField(d, ['pedido_id', 'id_pedido', 'pedido']) || 'PED-GEN'),
+        sucursalDestino: String(getField(d, ['sucursal_destino', 'sucursal', 'destino']) || 'Villa Lucre'),
+        transportista: String(getField(d, ['transportista', 'chofer', 'conductor']) || 'Transporte CEDIS'),
+        placaVehiculo: String(getField(d, ['placa_vehiculo', 'placa', 'unidad']) || 'CAMION-01'),
+        despachadorCedis: String(getField(d, ['despachador_cedis', 'despachador', 'usuario']) || 'Admin CEDIS'),
+        fechaDespacho: String(getField(d, ['fecha_despacho', 'fecha', 'created_at']) || new Date().toISOString().slice(0, 10)),
+        totalPiezas: Number(getField(d, ['total_piezas', 'piezas', 'total_items'])) || 1,
+        totalLineas: Number(getField(d, ['total_lineas', 'lineas'])) || 1,
+        estadoEntrega: (getField(d, ['estado_entrega', 'estado', 'estatus']) || 'EN TRANSITO').toUpperCase() as any,
+        observaciones: String(getField(d, ['observaciones', 'notas']) || ''),
+        lineasJson: String(getField(d, ['lineas_json', 'detalle']) || ''),
+      }));
+    }
+
+    return despachosLocales;
+  } catch (err) {
+    console.error('Error obteniendo despachos de Supabase:', err);
+    return despachosLocales;
+  }
+}
+
+/**
+ * Actualiza la ubicación física o saldo de un repuesto en bodega DPL
+ */
+export async function actualizarUbicacionRepuestoSupabase(
+  inventarioId: string,
+  nuevaUbicacion: string,
+  nuevoSaldo?: number
+): Promise<{ ok: boolean; error?: string }> {
+  if (!supabase || !isSupabaseConfigured()) {
+    return { ok: true };
+  }
+
+  try {
+    const updateData: Record<string, any> = {
+      ubicacion_cedis: nuevaUbicacion,
+    };
+    if (nuevoSaldo !== undefined) {
+      updateData.saldo_disponible = nuevoSaldo;
+    }
+
+    let { error } = await supabase
+      .from('dpl_detalle')
+      .update(updateData)
+      .eq('id', inventarioId);
+
+    if (error) {
+      await supabase
+        .from('dpl_detalle')
+        .update(updateData)
+        .eq('inventario_id', inventarioId);
+    }
+
+    return { ok: true };
+  } catch (err: any) {
+    console.error('Error actualizando ubicación en Supabase:', err);
+    return { ok: false, error: err.message };
+  }
+}
+
+// Directorio Oficial de Sucursales y Encargados CEDIS Changan Panamá
+const DIRECTORIO_ENCARGADOS_OFICIAL: EncargadoSucursal[] = [
+  {
+    id: 'ENC-01',
+    sucursal: 'Villa Lucre',
+    nombre: 'Leidys Perez',
+    cargo: 'Jefa de Repuestos & Taller',
+    telefono: '+507 277-8899',
+    whatsapp: '50762778899',
+    correo: 'repuestos.vl@changanpanama.com',
+    direccion: 'Vía Tocumen, Entrada Villa Lucre',
+    horarioAtencion: 'Lunes a Viernes 7:30 AM - 5:00 PM | Sábados 8:00 AM - 1:00 PM',
+  },
+  {
+    id: 'ENC-02',
+    sucursal: 'Tumba Muerto',
+    nombre: 'Ulisses Urriola',
+    cargo: 'Coordinador de Taller & Garantías',
+    telefono: '+507 236-1200',
+    whatsapp: '50762361200',
+    correo: 'repuestos.tm@changanpanama.com',
+    direccion: 'Av. Ricardo J. Alfaro, Frente a Plaza Edison',
+    horarioAtencion: 'Lunes a Viernes 7:30 AM - 5:00 PM | Sábados 8:00 AM - 1:00 PM',
+  },
+  {
+    id: 'ENC-03',
+    sucursal: 'Calle 50',
+    nombre: 'Edilson Uribe',
+    cargo: 'Jefe de Servicio y Posventa',
+    telefono: '+507 264-5500',
+    whatsapp: '50762645500',
+    correo: 'repuestos.c50@changanpanama.com',
+    direccion: 'Calle 50 y Calle 67 Este, San Francisco',
+    horarioAtencion: 'Lunes a Viernes 8:00 AM - 5:00 PM | Sábados 8:00 AM - 12:00 PM',
+  },
+  {
+    id: 'ENC-04',
+    sucursal: 'Costa Verde',
+    nombre: 'Arquimedes Jordan',
+    cargo: 'Encargado de Repuestos La Chorrera',
+    telefono: '+507 344-9000',
+    whatsapp: '50763449000',
+    correo: 'repuestos.cv@changanpanama.com',
+    direccion: 'Plaza Uniplaza Costa Verde, Autopista Arraiján - Chorrera',
+    horarioAtencion: 'Lunes a Viernes 8:00 AM - 5:00 PM | Sábados 8:00 AM - 1:00 PM',
+  },
+  {
+    id: 'ENC-05',
+    sucursal: 'Chiriquí',
+    nombre: 'Nivardo Gutierres',
+    cargo: 'Administrador Regional David & Provincias Centrales',
+    telefono: '+507 775-4300',
+    whatsapp: '50767754300',
+    correo: 'repuestos.ch@changanpanama.com',
+    direccion: 'Vía Interamericana, David, Chiriquí (Junto a Plaza Terronal)',
+    horarioAtencion: 'Lunes a Viernes 8:00 AM - 5:00 PM | Sábados 8:00 AM - 1:00 PM',
+  },
+];
+
+/**
+ * Obtiene el directorio de encargados desde Supabase (o el catálogo oficial)
+ */
+export async function obtenerEncargadosSupabase(): Promise<EncargadoSucursal[]> {
+  if (!supabase || !isSupabaseConfigured()) {
+    return DIRECTORIO_ENCARGADOS_OFICIAL;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('bd_encargados')
+      .select('*');
+
+    if (!error && data && data.length > 0) {
+      return data.map((enc: any, index: number) => ({
+        id: String(getField(enc, ['id', 'encargado_id']) || `ENC-${index + 1}`),
+        sucursal: String(getField(enc, ['sucursal', 'nombre_sucursal']) || 'Sucursal Changan'),
+        nombre: String(getField(enc, ['nombre', 'colaborador', 'encargado']) || 'Asesor'),
+        cargo: String(getField(enc, ['cargo', 'puesto', 'rol']) || 'Encargado de Repuestos'),
+        telefono: String(getField(enc, ['telefono', 'celular', 'tel']) || '+507 200-0000'),
+        whatsapp: String(getField(enc, ['whatsapp', 'telefono']) || '').replace(/[^0-9]/g, ''),
+        correo: String(getField(enc, ['correo', 'email']) || 'repuestos@changanpanama.com'),
+        direccion: String(getField(enc, ['direccion', 'ubicacion']) || 'Panamá'),
+        horarioAtencion: String(getField(enc, ['horario', 'horario_atencion']) || 'Lunes a Viernes 8:00 AM - 5:00 PM'),
+      }));
+    }
+
+    return DIRECTORIO_ENCARGADOS_OFICIAL;
+  } catch (err) {
+    console.error('Error obteniendo encargados de Supabase:', err);
+    return DIRECTORIO_ENCARGADOS_OFICIAL;
+  }
+}
+

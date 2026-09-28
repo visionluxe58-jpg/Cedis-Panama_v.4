@@ -285,3 +285,35 @@ export interface FilaRastreador {
   numeroOR: string;
   vin: string;
 }
+
+// ========== DESPACHOS Y LOGÍSTICA DE SALIDA ==========
+export interface DespachoRegistro {
+  id: string;
+  numeroGuia: string;
+  pedidoId: string;
+  sucursalDestino: string;
+  transportista: string;
+  placaVehiculo: string;
+  despachadorCedis: string;
+  fechaDespacho: string;
+  totalPiezas: number;
+  totalLineas: number;
+  estadoEntrega: 'PREPARACION' | 'EN TRANSITO' | 'ENTREGADO' | 'ANULADO';
+  fechaEntregaEstimada?: string;
+  observaciones?: string;
+  lineasJson?: string;
+}
+
+// ========== DIRECTORIO DE SUCURSALES Y ENCARGADOS ==========
+export interface EncargadoSucursal {
+  id: string;
+  sucursal: string;
+  nombre: string;
+  cargo: string;
+  telefono: string;
+  whatsapp?: string;
+  correo: string;
+  direccion?: string;
+  horarioAtencion?: string;
+}
+
