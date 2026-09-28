@@ -186,3 +186,6 @@ export { analizarCotizacion, analizarMuestraDemo, obtenerEstadisticasServicio } 
 
 // Re-exportar gestión DPL
 export * from './gestionDPL';
+
+// Re-exportar importación de datos
+export * from './importacionDatos';
