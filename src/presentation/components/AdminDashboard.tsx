@@ -27,6 +27,7 @@ import {
   actualizarUbicacionRepuestoSupabase,
   obtenerEncargadosSupabase,
   eliminarPedidosSupabase,
+  depurarYMigrarDespachadosSupabase,
 } from '../../data/api/supabaseClient';
 import {
   descargarEtiquetaPedido,
@@ -84,8 +85,9 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
 
   // Filtros de búsqueda en pedidos
   const [filtroSucursal, setFiltroSucursal] = useState<string>('TODAS');
-  const [filtroEstatus, setFiltroEstatus] = useState<string>('TODOS');
+  const [filtroEstatus, setFiltroEstatus] = useState<string>('ACTIVOS');
   const [busquedaPedido, setBusquedaPedido] = useState<string>('');
+  const [depurandoMatriz, setDepurandoMatriz] = useState<boolean>(false);
 
   // Filtros de inventario
   const [busquedaInventario, setBusquedaInventario] = useState<string>('');
@@ -197,6 +199,52 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       }
       return nuevo;
     });
+  };
+
+  // Analizar y Depurar Matriz: Detecta repuestos despachados y los organiza en Despachos
+  const handleAnalizarYDepurar = async () => {
+    const confirmar = window.confirm(
+      '¿Desea analizar toda la base de datos de pedidos?\n\n' +
+      'Esta función:\n' +
+      '1. Analiza cada fila para detectar si ya fue despachada o entregada.\n' +
+      '2. Actualiza el estatus en Supabase y memoria local a "Despachado".\n' +
+      '3. Mueve y consolida automáticamente todos los despachos en la pestaña "Retiro en Mostrador CEDIS".\n' +
+      '4. Despeja la vista activa de "Gestión de Pedidos" para mostrar solo lo pendiente.'
+    );
+    if (!confirmar) return;
+
+    setDepurandoMatriz(true);
+    try {
+      const res = await depurarYMigrarDespachadosSupabase(filas);
+      setFilas(prev =>
+        prev.map(f => {
+          const est = (f.estatusLinea || '').toUpperCase();
+          const esDesp =
+            est.includes('DESPACH') ||
+            est.includes('ENTREG') ||
+            est.includes('RETIR') ||
+            (f.cantidadDespachada > 0 && f.cantidadDespachada >= f.cantidadSolicitada);
+          if (esDesp) {
+            return {
+              ...f,
+              estatusLinea: 'Despachado',
+              cantidadDespachada: f.cantidadDespachada || f.cantidadSolicitada,
+            };
+          }
+          return f;
+        })
+      );
+      const despActualizados = await obtenerDespachosSupabase();
+      if (despActualizados) {
+        setDespachos(despActualizados);
+      }
+      notificar(`¡Depuración completada! ${res.migradosCount} pedidos analizados y organizados en la sección de Despachos.`);
+    } catch (err) {
+      console.error('Error depurando pedidos despachados:', err);
+      notificar('Error al procesar la depuración.');
+    } finally {
+      setDepurandoMatriz(false);
+    }
   };
 
   // Eliminación individual de un pedido
@@ -434,14 +482,62 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     notificar(`Ubicación actualizada a ${nuevaUbicacionInput.trim().toUpperCase()}`);
   };
 
-  // Filtrado reactivo de pedidos
+  // Consolidación de despachos: Registros de Despachos + Filas de matriz que ya fueron despachadas
+  const despachosConsolidados = useMemo(() => {
+    const mapDespachos = new Map<string, DespachoRegistro>();
+
+    // 1. Registros oficiales de la tabla de despachos / caché
+    despachos.forEach(d => {
+      const key = (d.pedidoId || d.id || '').trim();
+      if (key) {
+        mapDespachos.set(key, d);
+      }
+    });
+
+    // 2. Filas de matriz que figuran como despachadas
+    filas.forEach(f => {
+      const esDesp =
+        f.estatusLinea === 'Despachado' ||
+        (f.cantidadDespachada > 0 && f.cantidadDespachada >= f.cantidadSolicitada);
+
+      if (esDesp) {
+        const key = (f.pedidoId || f.lineaId || '').trim();
+        if (!mapDespachos.has(key)) {
+          mapDespachos.set(key, {
+            id: `DSP-${f.lineaId}`,
+            numeroGuia: `ACTA-${f.pedidoId || f.lineaId}`,
+            pedidoId: f.pedidoId,
+            sucursalDestino: f.sucursal,
+            transportista: `Retiro Mostrador (${f.colaborador || 'Personal Sucursal'})`,
+            placaVehiculo: 'RETIRO EN CEDIS',
+            despachadorCedis: 'Bodega Central CEDIS',
+            fechaDespacho: new Date().toISOString().slice(0, 10),
+            totalPiezas: f.cantidadDespachada || f.cantidadSolicitada || 1,
+            totalLineas: 1,
+            estadoEntrega: 'ENTREGADO',
+            observaciones: `Repuesto ${f.codigoRepuesto} (${f.descripcionOficial}) - Cliente: ${f.cliente || 'Taller'}`,
+            lineasJson: JSON.stringify([f]),
+          });
+        }
+      }
+    });
+
+    return Array.from(mapDespachos.values());
+  }, [despachos, filas]);
+
+  // Filtrado reactivo de pedidos (Por defecto excluye pedidos ya despachados para no crear confusión)
   const pedidosFiltrados = useMemo(() => {
     return filas.filter(f => {
       const coincideSucursal = filtroSucursal === 'TODAS' || f.sucursal.toLowerCase() === filtroSucursal.toLowerCase();
+      
+      const esDespachado = (f.estatusLinea || '').toLowerCase() === 'despachado';
       const coincideEstatus =
-        filtroEstatus === 'TODOS' ||
-        (filtroEstatus === 'Pendiente' && (f.estatusLinea === 'Pendiente' || !f.estatusLinea)) ||
-        f.estatusLinea?.toLowerCase() === filtroEstatus.toLowerCase();
+        filtroEstatus === 'ACTIVOS'
+          ? !esDespachado
+          : filtroEstatus === 'TODOS'
+          ? true
+          : (filtroEstatus === 'Pendiente' && (f.estatusLinea === 'Pendiente' || !f.estatusLinea)) ||
+            f.estatusLinea?.toLowerCase() === filtroEstatus.toLowerCase();
 
       const q = busquedaPedido.trim().toLowerCase();
       const coincideTexto =
@@ -476,19 +572,20 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     });
   }, [inventario, busquedaInventario, filtroRack]);
 
-  // Filtrado de despachos
+  // Filtrado de despachos consolidados
   const despachosFiltrados = useMemo(() => {
-    return despachos.filter(d => {
+    return despachosConsolidados.filter(d => {
       const q = busquedaDespacho.trim().toLowerCase();
       return (
         !q ||
         d.numeroGuia.toLowerCase().includes(q) ||
         d.sucursalDestino.toLowerCase().includes(q) ||
         d.pedidoId.toLowerCase().includes(q) ||
-        d.transportista.toLowerCase().includes(q)
+        d.transportista.toLowerCase().includes(q) ||
+        (d.observaciones && d.observaciones.toLowerCase().includes(q))
       );
     });
-  }, [despachos, busquedaDespacho]);
+  }, [despachosConsolidados, busquedaDespacho]);
 
   // Cálculos dinámicos
   const kpis = calcularKPIs(filas, inventario);
@@ -595,7 +692,9 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
           >
             <i className="fas fa-clipboard-list"></i>
             <span>Gestión de Pedidos</span>
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-900/30 text-white">{filas.length}</span>
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-900/30 text-white">
+              {filas.filter(f => f.estatusLinea !== 'Despachado').length} activos
+            </span>
           </button>
 
           <button
@@ -607,8 +706,10 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
             }`}
           >
             <i className="fas fa-clipboard-check"></i>
-            <span>Retiro en Mostrador CEDIS</span>
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-600 text-white">{despachos.length}</span>
+            <span>Retiro en Mostrador CEDIS / Despachos</span>
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-600 text-white">
+              {despachosConsolidados.length}
+            </span>
           </button>
 
           <button
@@ -686,8 +787,10 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
               <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex items-center justify-between">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Pedidos</p>
-                  <p className="text-2xl font-black text-slate-900 mt-1">{kpis.totalPedidos}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">{kpis.totalLineas} líneas de repuestos</p>
+                  <p className="text-2xl font-black text-slate-900 mt-1">{filas.length}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {filas.filter(f => f.estatusLinea !== 'Despachado').length} activos · {filas.filter(f => f.estatusLinea === 'Despachado').length} despachados
+                  </p>
                 </div>
                 <div className="w-11 h-11 bg-red-100 text-red-600 rounded-xl flex items-center justify-center text-lg">
                   <i className="fas fa-file-invoice"></i>
@@ -710,8 +813,8 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
               <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex items-center justify-between">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Despachos Emitidos</p>
-                  <p className="text-2xl font-black text-sky-600 mt-1">{despachos.length}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">Transferencias a sucursales</p>
+                  <p className="text-2xl font-black text-sky-600 mt-1">{despachosConsolidados.length}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Total repuestos retirados</p>
                 </div>
                 <div className="w-11 h-11 bg-sky-100 text-sky-600 rounded-xl flex items-center justify-center text-lg">
                   <i className="fas fa-truck"></i>
@@ -744,9 +847,19 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     </p>
                   </div>
 
-                  {/* Acciones de exportación */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-slate-500">
+                  {/* Acciones de exportación y depuración */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={handleAnalizarYDepurar}
+                      disabled={depurandoMatriz}
+                      className="px-3.5 py-1.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 border border-amber-800/30 disabled:opacity-50"
+                      title="Analiza la base de datos completa y transfiere automáticamente todos los pedidos despachados a la sección de Despacho"
+                    >
+                      <i className={`fas fa-magic ${depurandoMatriz ? 'animate-spin text-amber-200' : 'text-amber-200'}`}></i>
+                      <span>{depurandoMatriz ? 'Depurando...' : '⚡ Analizar y Depurar Matriz'}</span>
+                    </button>
+
+                    <span className="text-xs font-bold text-slate-500 bg-slate-200/80 px-2.5 py-1.5 rounded-lg">
                       Mostrando {pedidosFiltrados.length} de {filas.length} pedidos
                     </span>
                   </div>
@@ -787,11 +900,12 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                       onChange={e => setFiltroEstatus(e.target.value)}
                       className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-medium"
                     >
-                      <option value="TODOS">⚡ Todos los Estatus</option>
-                      <option value="Pendiente">🟡 Pendientes</option>
+                      <option value="ACTIVOS">⚡ Activos por Despachar (Excluye Despachados)</option>
+                      <option value="Pendiente">🟡 Solo Pendientes</option>
                       <option value="Asignado">🔵 Asignados / En Picking</option>
-                      <option value="Despachado">🟢 Despachados</option>
                       <option value="Sin Stock">🔴 Sin Stock</option>
+                      <option value="Despachado">🟢 Ver Solo Despachados</option>
+                      <option value="TODOS">📋 Todos los Registros (Histórico Completo)</option>
                     </select>
                   </div>
 
@@ -800,7 +914,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     onClick={() => {
                       setBusquedaPedido('');
                       setFiltroSucursal('TODAS');
-                      setFiltroEstatus('TODOS');
+                      setFiltroEstatus('ACTIVOS');
                     }}
                     className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-200/70 hover:bg-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1.5"
                   >
@@ -978,7 +1092,19 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                               {/* Acciones */}
                               <td className="py-3 px-4 text-right">
                                 <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                                  {!esDespachado && (
+                                  {esDespachado ? (
+                                    <button
+                                      onClick={() => {
+                                        setVistaActiva('despachos');
+                                        setBusquedaDespacho(fila.pedidoId || fila.codigoRepuesto);
+                                      }}
+                                      className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded font-bold text-[11px] transition-colors flex items-center gap-1 shadow-sm"
+                                      title="Ver registro y acta oficial en la pestaña de Despachos"
+                                    >
+                                      <i className="fas fa-clipboard-check text-emerald-600"></i>
+                                      <span>Ver Despacho</span>
+                                    </button>
+                                  ) : (
                                     <>
                                       {!esAsignado && (
                                         <button
@@ -1052,22 +1178,25 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 <div>
                   <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
                     <i className="fas fa-clipboard-check text-emerald-600"></i>
-                    Control de Retiros en Mostrador CEDIS y Actas de Entrega
+                    Control de Retiros en Mostrador CEDIS y Despachos Consolidados
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    Historial oficial de repuestos especiales retirados presencialmente por los asesores y choferes de cada sucursal en el mostrador de Bodega Central.
+                    Historial oficial consolidado de repuestos especiales ya despachados o retirados presencialmente por asesores y personal en Bodega Central.
                   </p>
                 </div>
 
                 <div className="flex items-center gap-3">
+                  <span className="text-xs font-bold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 hidden sm:inline-block">
+                    Total Despachados: {despachosConsolidados.length}
+                  </span>
                   <div className="relative">
                     <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                     <input
                       type="text"
-                      placeholder="Buscar por acta, pedido, sucursal..."
+                      placeholder="Buscar por acta, pedido, repuesto, sucursal..."
                       value={busquedaDespacho}
                       onChange={e => setBusquedaDespacho(e.target.value)}
-                      className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                      className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 w-64"
                     />
                   </div>
                 </div>
@@ -1078,8 +1207,9 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="bg-slate-100 text-slate-600 font-bold uppercase tracking-wider text-[11px] border-b border-slate-200">
-                      <th className="py-3 px-4">No. Acta</th>
-                      <th className="py-3 px-4">Pedido Origen</th>
+                      <th className="py-3 px-4">No. Acta / Folio</th>
+                      <th className="py-3 px-4">Pedido / OR</th>
+                      <th className="py-3 px-4">Repuesto / Detalle</th>
                       <th className="py-3 px-4">Sucursal Retiro</th>
                       <th className="py-3 px-4">Personal que Retiró</th>
                       <th className="py-3 px-4 text-center">Piezas</th>
@@ -1090,38 +1220,70 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                   <tbody className="divide-y divide-slate-200">
                     {despachosFiltrados.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="py-12 text-center text-slate-400">
+                        <td colSpan={8} className="py-12 text-center text-slate-400">
                           <i className="fas fa-clipboard text-3xl mb-2 block text-slate-300"></i>
-                          No hay registros de retiros aún. Haz clic en "Retiro Mostrador" en la Gestión de Pedidos para generar el primer retiro con su acta en PDF.
+                          No hay registros de retiros que coincidan con la búsqueda. Puedes usar "⚡ Analizar y Depurar Matriz" en Gestión de Pedidos para organizar repuestos despachados.
                         </td>
                       </tr>
                     ) : (
-                      despachosFiltrados.map((d) => (
-                        <tr key={d.id} className="hover:bg-slate-50">
-                          <td className="py-3 px-4 font-mono font-bold text-red-700">{d.numeroGuia}</td>
-                          <td className="py-3 px-4 font-mono">{d.pedidoId}</td>
-                          <td className="py-3 px-4 font-bold text-slate-800">{d.sucursalDestino}</td>
-                          <td className="py-3 px-4 text-slate-600">
-                            <div className="font-semibold text-slate-800">{d.transportista}</div>
-                            <div className="text-[11px] text-slate-400">Fecha: {d.fechaDespacho} | Despachador: {d.despachadorCedis}</div>
-                          </td>
-                          <td className="py-3 px-4 text-center font-bold text-slate-900">{d.totalPiezas}</td>
-                          <td className="py-3 px-4 text-center">
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                              {d.estadoEntrega || 'ENTREGADO'}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <button
-                              onClick={() => handleReDescargarActa(d)}
-                              className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded font-semibold text-xs transition-colors flex items-center gap-1.5 ml-auto shadow-sm"
-                            >
-                              <i className="fas fa-file-pdf"></i>
-                              <span>Descargar Acta PDF</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))
+                      despachosFiltrados.map((d) => {
+                        let repuestoInfo = '';
+                        try {
+                          if (d.lineasJson) {
+                            const parsed = JSON.parse(d.lineasJson);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                              repuestoInfo = `${parsed[0].codigoRepuesto || ''} - ${parsed[0].descripcionOficial || ''}`;
+                            }
+                          }
+                        } catch {}
+                        if (!repuestoInfo && d.observaciones) {
+                          repuestoInfo = d.observaciones;
+                        }
+
+                        return (
+                          <tr key={d.id} className="hover:bg-slate-50">
+                            <td className="py-3 px-4 font-mono font-bold text-red-700">
+                              <span className="block">{d.numeroGuia}</span>
+                              <span className="text-[10px] text-slate-400 font-normal">
+                                {d.id.startsWith('DSP-AUTO') || d.id.startsWith('DSP-LIN') ? 'Desde Matriz' : 'Acta en Mostrador'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 font-mono">
+                              <span className="font-bold text-slate-800 block">{d.pedidoId}</span>
+                            </td>
+                            <td className="py-3 px-4 max-w-xs">
+                              <div className="font-semibold text-slate-800 text-xs truncate" title={repuestoInfo}>
+                                {repuestoInfo || 'Repuestos retirados de bodega'}
+                              </div>
+                              {d.observaciones && (
+                                <div className="text-[10px] text-slate-400 truncate" title={d.observaciones}>
+                                  {d.observaciones}
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 font-bold text-slate-800">{d.sucursalDestino}</td>
+                            <td className="py-3 px-4 text-slate-600">
+                              <div className="font-semibold text-slate-800">{d.transportista}</div>
+                              <div className="text-[11px] text-slate-400">Fecha: {d.fechaDespacho} | Despachador: {d.despachadorCedis}</div>
+                            </td>
+                            <td className="py-3 px-4 text-center font-bold text-slate-900">{d.totalPiezas}</td>
+                            <td className="py-3 px-4 text-center">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                {d.estadoEntrega || 'ENTREGADO'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <button
+                                onClick={() => handleReDescargarActa(d)}
+                                className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded font-semibold text-xs transition-colors flex items-center gap-1.5 ml-auto shadow-sm"
+                              >
+                                <i className="fas fa-file-pdf"></i>
+                                <span>Descargar Acta PDF</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>

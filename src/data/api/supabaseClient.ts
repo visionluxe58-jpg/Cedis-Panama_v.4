@@ -321,26 +321,46 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
 
     let filasSupabase: FilaRastreador[] = [];
     if (!error && data && data.length > 0) {
-      filasSupabase = data.map((item: any) => ({
-        lineaId: String(getField(item, ['linea_id', 'id', 'lineaId']) || `LIN-${Math.random().toString().slice(-6)}`),
-        pedidoId: String(getField(item, ['pedido_id', 'id_pedido', 'pedido', 'folio']) || ''),
-        codigoRepuesto: String(getField(item, ['codigo_repuesto', 'codigo', 'cod_repuesto', 'part_number']) || ''),
-        descripcionOficial: String(getField(item, ['descripcion_oficial', 'descripcion', 'repuesto']) || ''),
-        cantidadSolicitada: Number(getField(item, ['cantidad_solicitada', 'cantidad', 'cant_solicitada', 'solicitado'])) || 0,
-        cantidadAsignada: Number(getField(item, ['cantidad_asignada', 'asignada', 'cant_asignada'])) || 0,
-        cantidadDespachada: Number(getField(item, ['cantidad_despachada', 'despachada', 'cant_despachada'])) || 0,
-        estatusLinea: String(getField(item, ['estatus_linea', 'estatus', 'estado']) || 'Pendiente'),
-        contenedorAsignado: String(getField(item, ['contenedor_asignado', 'contenedor', 'contenedor_id']) || ''),
-        palletAsignado: String(getField(item, ['pallet_asignado', 'pallet', 'pallet_case_no']) || ''),
-        packageNo: String(getField(item, ['package_no', 'paquete', 'package']) || ''),
-        ubicacionCedis: String(getField(item, ['ubicacion_cedis', 'ubicacion']) || ''),
-        sucursal: String(getField(item, ['sucursal', 'sucursal_destino', 'sucursalorigen']) || 'Villa Lucre'),
-        colaborador: String(getField(item, ['colaborador', 'asesor', 'creado_por', 'usuario']) || 'Asesor'),
-        cliente: String(getField(item, ['cliente', 'nombre_cliente']) || 'Consumidor Final'),
-        modeloChangan: String(getField(item, ['modelo_changan', 'modelo', 'vehiculo']) || 'Changan'),
-        numeroOR: String(getField(item, ['cotizacion_numero_or', 'numero_or', 'or', 'no_cotizacion', 'cotizacion']) || ''),
-        vin: String(getField(item, ['vin', 'chasis']) || ''),
-      }));
+      filasSupabase = data.map((item: any) => {
+        const rawEstatus = String(getField(item, ['estatus_linea', 'estatus', 'estado', 'estado_despacho', 'estado_pedido']) || 'Pendiente').trim();
+        const cantSolicitada = Number(getField(item, ['cantidad_solicitada', 'cantidad', 'cant_solicitada', 'solicitado'])) || 0;
+        const cantDespachada = Number(getField(item, ['cantidad_despachada', 'despachada', 'cant_despachada', 'piezas_despachadas'])) || 0;
+        const cantAsignada = Number(getField(item, ['cantidad_asignada', 'asignada', 'cant_asignada'])) || 0;
+        const tieneGuia = !!getField(item, ['guia', 'guia_despacho', 'numero_guia', 'acta', 'acta_retiro', 'conduce']);
+        const tieneFechaDespacho = !!getField(item, ['fecha_despacho', 'fecha_retiro', 'fecha_entrega']);
+
+        // Detección automática inteligente de si ya fue despachado
+        const esDespachado =
+          rawEstatus.toUpperCase().includes('DESPACH') ||
+          rawEstatus.toUpperCase().includes('ENTREG') ||
+          rawEstatus.toUpperCase().includes('RETIR') ||
+          (cantDespachada > 0 && cantSolicitada > 0 && cantDespachada >= cantSolicitada) ||
+          (cantDespachada > 0 && tieneGuia) ||
+          (tieneFechaDespacho && tieneGuia);
+
+        const estatusFinal = esDespachado ? 'Despachado' : (rawEstatus || 'Pendiente');
+
+        return {
+          lineaId: String(getField(item, ['linea_id', 'id', 'lineaId']) || `LIN-${Math.random().toString().slice(-6)}`),
+          pedidoId: String(getField(item, ['pedido_id', 'id_pedido', 'pedido', 'folio']) || ''),
+          codigoRepuesto: String(getField(item, ['codigo_repuesto', 'codigo', 'cod_repuesto', 'part_number']) || ''),
+          descripcionOficial: String(getField(item, ['descripcion_oficial', 'descripcion', 'repuesto']) || ''),
+          cantidadSolicitada: cantSolicitada,
+          cantidadAsignada: esDespachado ? (cantAsignada || cantSolicitada) : cantAsignada,
+          cantidadDespachada: esDespachado ? (cantDespachada || cantSolicitada) : cantDespachada,
+          estatusLinea: estatusFinal,
+          contenedorAsignado: String(getField(item, ['contenedor_asignado', 'contenedor', 'contenedor_id']) || ''),
+          palletAsignado: String(getField(item, ['pallet_asignado', 'pallet', 'pallet_case_no']) || ''),
+          packageNo: String(getField(item, ['package_no', 'paquete', 'package']) || ''),
+          ubicacionCedis: String(getField(item, ['ubicacion_cedis', 'ubicacion']) || ''),
+          sucursal: String(getField(item, ['sucursal', 'sucursal_destino', 'sucursalorigen']) || 'Villa Lucre'),
+          colaborador: String(getField(item, ['colaborador', 'asesor', 'creado_por', 'usuario']) || 'Asesor'),
+          cliente: String(getField(item, ['cliente', 'nombre_cliente']) || 'Consumidor Final'),
+          modeloChangan: String(getField(item, ['modelo_changan', 'modelo', 'vehiculo']) || 'Changan'),
+          numeroOR: String(getField(item, ['cotizacion_numero_or', 'numero_or', 'or', 'no_cotizacion', 'cotizacion']) || ''),
+          vin: String(getField(item, ['vin', 'chasis']) || ''),
+        };
+      });
     }
 
     // 2. Si las tablas matriz estuvieran vacías, intentar desde lineas_pedido y pedidos
@@ -357,15 +377,24 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
       if (!lineasError && lineas && lineas.length > 0) {
         filasSupabase = lineas.map((item: any) => {
           const p = item.pedidos || {};
+          const rawEstatus = String(item.estatus_linea || 'Pendiente').trim();
+          const cantSol = Number(item.cantidad) || 0;
+          const cantDesp = Number(item.cantidad_despachada) || 0;
+          const esDesp =
+            rawEstatus.toUpperCase().includes('DESPACH') ||
+            rawEstatus.toUpperCase().includes('ENTREG') ||
+            rawEstatus.toUpperCase().includes('RETIR') ||
+            (cantDesp > 0 && cantSol > 0 && cantDesp >= cantSol);
+
           return {
             lineaId: String(item.id),
             pedidoId: String(item.folio || ''),
             codigoRepuesto: String(item.codigo_repuesto || ''),
             descripcionOficial: String(item.descripcion || ''),
-            cantidadSolicitada: Number(item.cantidad) || 0,
-            cantidadAsignada: Number(item.cantidad_asignada) || 0,
-            cantidadDespachada: Number(item.cantidad_despachada) || 0,
-            estatusLinea: String(item.estatus_linea || 'Pendiente'),
+            cantidadSolicitada: cantSol,
+            cantidadAsignada: esDesp ? (Number(item.cantidad_asignada) || cantSol) : (Number(item.cantidad_asignada) || 0),
+            cantidadDespachada: esDesp ? (cantDesp || cantSol) : cantDesp,
+            estatusLinea: esDesp ? 'Despachado' : rawEstatus,
             contenedorAsignado: String(item.contenedor_asignado || ''),
             palletAsignado: String(item.pallet_asignado || ''),
             packageNo: String(item.package_no || ''),
@@ -644,6 +673,111 @@ export async function eliminarPedidosSupabase(
     console.error('Error al eliminar pedidos en Supabase:', err);
     return { ok: false, count: 0, error: err.message };
   }
+}
+
+/**
+ * Analiza todas las filas de la matriz de pedidos, detecta cuáles fueron despachadas,
+ * actualiza su estatus en Supabase para que figuren como 'Despachado'
+ * y asegura que existan en el registro de despachos/retiros.
+ */
+export async function depurarYMigrarDespachadosSupabase(
+  filas: FilaRastreador[]
+): Promise<{ ok: boolean; migradosCount: number; pendientesCount: number }> {
+  const despachadas: FilaRastreador[] = [];
+  const pendientes: FilaRastreador[] = [];
+
+  filas.forEach(f => {
+    const est = (f.estatusLinea || '').toUpperCase();
+    const esDesp =
+      est.includes('DESPACH') ||
+      est.includes('ENTREG') ||
+      est.includes('RETIR') ||
+      (f.cantidadDespachada > 0 && f.cantidadDespachada >= f.cantidadSolicitada);
+
+    if (esDesp) {
+      despachadas.push({
+        ...f,
+        estatusLinea: 'Despachado',
+        cantidadDespachada: f.cantidadDespachada || f.cantidadSolicitada,
+      });
+    } else {
+      pendientes.push(f);
+    }
+  });
+
+  if (despachadas.length > 0) {
+    // 1. Actualizar estatus en Supabase
+    for (const d of despachadas) {
+      await actualizarEstatusPedidoSupabase(d.lineaId, 'Despachado', {
+        cantidadDespachada: d.cantidadDespachada,
+      });
+    }
+
+    // 2. Actualizar caché local de pedidos
+    try {
+      const rawLocal = localStorage.getItem('cedis_pedidos_locales');
+      if (rawLocal) {
+        const locales: FilaRastreador[] = JSON.parse(rawLocal);
+        const actualizados = locales.map(item => {
+          const match = despachadas.find(d => d.lineaId === item.lineaId || d.pedidoId === item.pedidoId);
+          if (match) {
+            return {
+              ...item,
+              estatusLinea: 'Despachado',
+              cantidadDespachada: item.cantidadSolicitada,
+            };
+          }
+          return item;
+        });
+        localStorage.setItem('cedis_pedidos_locales', JSON.stringify(actualizados));
+      }
+    } catch {}
+
+    // 3. Registrar en tabla de despachos
+    try {
+      const rawDesp = localStorage.getItem('cedis_despachos_cache');
+      const despachosExistentes: DespachoRegistro[] = rawDesp ? JSON.parse(rawDesp) : [];
+      const nuevosDespachos: DespachoRegistro[] = [];
+
+      despachadas.forEach(d => {
+        const yaExiste = despachosExistentes.some(prev => prev.pedidoId === d.pedidoId);
+        if (!yaExiste) {
+          nuevosDespachos.push({
+            id: `DSP-AUTO-${d.lineaId}`,
+            numeroGuia: `ACTA-${d.pedidoId}`,
+            pedidoId: d.pedidoId,
+            sucursalDestino: d.sucursal,
+            transportista: `Retirado en Mostrador (${d.colaborador || 'Personal Sucursal'})`,
+            placaVehiculo: 'RETIRO EN CEDIS',
+            despachadorCedis: 'Bodega Central CEDIS',
+            fechaDespacho: new Date().toISOString().slice(0, 10),
+            totalPiezas: d.cantidadDespachada || d.cantidadSolicitada || 1,
+            totalLineas: 1,
+            estadoEntrega: 'ENTREGADO',
+            observaciones: `Repuesto ${d.codigoRepuesto} (${d.descripcionOficial}) retirado para ${d.cliente || 'Taller'}`,
+            lineasJson: JSON.stringify([d]),
+          });
+        }
+      });
+
+      if (nuevosDespachos.length > 0) {
+        const combinados = [...nuevosDespachos, ...despachosExistentes];
+        localStorage.setItem('cedis_despachos_cache', JSON.stringify(combinados));
+
+        for (const nd of nuevosDespachos) {
+          await guardarDespachoSupabase(nd);
+        }
+      }
+    } catch (e) {
+      console.warn('Error sincronizando despachos:', e);
+    }
+  }
+
+  return {
+    ok: true,
+    migradosCount: despachadas.length,
+    pendientesCount: pendientes.length,
+  };
 }
 
 const STORAGE_KEY_DESPACHOS = 'cedis_despachos_cache';
