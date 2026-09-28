@@ -12,9 +12,24 @@ import type {
   EncargadoSucursal,
 } from '../../domain/models/types';
 
-// Obtención de variables de entorno de Vite
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Sanitiza la URL de Supabase eliminando /rest/v1, /storage/v1 o barras finales añadidas por error en Vercel
+function sanitizarSupabaseUrl(raw: string): string {
+  if (!raw) return '';
+  const trimmed = raw.trim().replace(/^['"]|['"]$/g, '');
+  try {
+    const parsed = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return trimmed.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
+  }
+}
+
+// Obtención de variables de entorno de Vite sanitizadas
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const rawSupabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+export const supabaseUrl = sanitizarSupabaseUrl(rawSupabaseUrl);
+export const supabaseAnonKey = rawSupabaseAnonKey.trim().replace(/^['"]|['"]$/g, '');
 
 // Validar si Supabase está configurado con valores reales
 export const isSupabaseConfigured = (): boolean => {
@@ -139,9 +154,44 @@ export async function guardarPedidoSupabase(payload: {
         transporte: linea.transporte || 'Aereo',
       }));
 
-      const { error: insertError } = await supabase
+      let { error: insertError } = await supabase
         .from('matriz_pedidos')
         .insert(filasToInsert);
+
+      // Fallback a matriz_central
+      if (insertError && (insertError.message.includes('relation') || insertError.message.includes('does not exist'))) {
+        const respCentral = await supabase.from('matriz_central').insert(filasToInsert);
+        if (!respCentral.error) {
+          insertError = null;
+        }
+      }
+
+      // Fallback a pedidos y lineas_pedido
+      if (insertError && (insertError.message.includes('relation') || insertError.message.includes('does not exist'))) {
+        const { error: errPed } = await supabase.from('pedidos').insert([{
+          folio: payload.folio,
+          sucursal: payload.sucursal,
+          colaborador: payload.colaborador,
+          tipo_pedido: payload.tipoPedido,
+          cliente: payload.cliente,
+          modelo_changan: payload.modeloChangan,
+          vin: payload.vin,
+          no_cotizacion: payload.noCotizacion || '',
+          observaciones: payload.observaciones || '',
+        }]);
+
+        if (!errPed) {
+          const lineasPedido = payload.lineas.map(l => ({
+            folio: payload.folio,
+            codigo_repuesto: l.codigoRepuesto,
+            descripcion: l.descripcion,
+            cantidad: l.cantidad || 1,
+            estatus_linea: 'Pendiente',
+          }));
+          await supabase.from('lineas_pedido').insert(lineasPedido);
+          insertError = null;
+        }
+      }
 
       if (insertError) {
         console.error('Error insertando en matriz_pedidos:', insertError);
