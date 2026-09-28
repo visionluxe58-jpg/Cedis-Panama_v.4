@@ -2,11 +2,16 @@
  * Panel de Administración - CEDIS Changan Panamá
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { AuthState, DPLDetalle, DPLManifiesto, FilaRastreador } from '../../domain/models/types';
 import { ModalRastreadorUniversal } from './ModalRastreadorUniversal';
 import { calcularKPIs, ejecutarMatchingFIFO } from '../../domain/services';
 import { CruceDPL } from './CruceDPL';
+import {
+  isSupabaseConfigured,
+  obtenerFilasAdminSupabase,
+  suscribirCambiosPedidosSupabase,
+} from '../../data/api/supabaseClient';
 
 interface AdminDashboardProps {
   auth: AuthState;
@@ -42,6 +47,36 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   const [vistaActiva, setVistaActiva] = useState<'dashboard' | 'kpis' | 'matching' | 'cruceDPL'>('dashboard');
   const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
 
+  // Estado reactivo para pedidos y conexión en tiempo real
+  const [filas, setFilas] = useState<FilaRastreador[]>(DEMO_FILAS);
+  const [isLive, setIsLive] = useState<boolean>(isSupabaseConfigured());
+  const [cargando, setCargando] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+
+    const cargarDatos = async () => {
+      setCargando(true);
+      const realFilas = await obtenerFilasAdminSupabase();
+      if (realFilas && realFilas.length > 0) {
+        setFilas(realFilas);
+        setIsLive(true);
+      }
+      setCargando(false);
+    };
+
+    cargarDatos();
+
+    // Suscripción a cambios en tiempo real
+    const desuscribir = suscribirCambiosPedidosSupabase(() => {
+      cargarDatos();
+    });
+
+    return () => {
+      desuscribir();
+    };
+  }, []);
+
   const handleAbrirRastreador = (codigo?: string) => {
     setCodigoInicial(codigo || '');
     setModalRastreadorAbierto(true);
@@ -52,8 +87,8 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     setCodigoInicial('');
   };
 
-  const kpis = calcularKPIs(DEMO_FILAS, DEMO_INVENTARIO);
-  const matchingResult = ejecutarMatchingFIFO(DEMO_FILAS, DEMO_INVENTARIO);
+  const kpis = calcularKPIs(filas, DEMO_INVENTARIO);
+  const matchingResult = ejecutarMatchingFIFO(filas, DEMO_INVENTARIO);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -66,7 +101,23 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 <i className="fas fa-user-shield text-2xl"></i>
               </div>
               <div>
-                <h1 className="text-xl font-bold">Panel de Administración</h1>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-xl font-bold">Panel de Administración</h1>
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                      isLive
+                        ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-200 border border-amber-500/30'
+                    }`}
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        isLive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                      }`}
+                    ></span>
+                    {isLive ? 'Supabase en Vivo' : 'Modo Demo'}
+                  </span>
+                </div>
                 <p className="text-sm text-red-200">CEDIS Changan Panamá</p>
               </div>
             </div>
@@ -215,9 +266,12 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
 
             {/* Recent Activity */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-              <h2 className="text-lg font-bold text-gray-900 mb-4">Actividad Reciente</h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-gray-900">Actividad Reciente {isLive ? '(Tiempo Real)' : '(Modo Demo)'}</h2>
+                {cargando && <span className="text-xs text-gray-400">Actualizando...</span>}
+              </div>
               <div className="space-y-4">
-                {DEMO_FILAS.slice(0, 3).map((fila) => (
+                {filas.slice(0, 6).map((fila) => (
                   <div key={fila.lineaId} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
                     <div className="flex items-center gap-4">
                       <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
@@ -443,7 +497,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       <ModalRastreadorUniversal
         isOpen={modalRastreadorAbierto}
         onClose={handleCerrarRastreador}
-        filas={DEMO_FILAS}
+        filas={filas}
         inventario={DEMO_INVENTARIO}
         manifiestos={DEMO_MANIFIESTOS}
         codigoInicial={codigoInicial}

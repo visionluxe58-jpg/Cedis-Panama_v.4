@@ -4,9 +4,14 @@
  */
 
 import type { Asesor, FolioResponse, TransmisionResponse } from '../../domain/models/types';
+import {
+  isSupabaseConfigured,
+  obtenerSiguienteFolioSupabase,
+  guardarPedidoSupabase,
+} from './supabaseClient';
 
 const STORAGE_KEY = 'cedis_webapp_url';
-const DEMO_MODE = true; // Cambiar a false cuando se configure el backend real
+const DEMO_MODE = !isSupabaseConfigured(); // Usa Supabase si está disponible, sino Demo
 
 // ========== CONFIGURACIÓN ==========
 
@@ -19,7 +24,7 @@ export function setWebAppUrl(url: string): void {
 }
 
 export function isConfigured(): boolean {
-  return !DEMO_MODE && getWebAppUrl().includes('script.google.com');
+  return isSupabaseConfigured() || (!DEMO_MODE && getWebAppUrl().includes('script.google.com'));
 }
 
 // ========== DATOS DEMO ==========
@@ -41,6 +46,9 @@ let folioCounter = 100;
 // ========== API CALLS ==========
 
 export async function ping(): Promise<{ ok: boolean; ts: string }> {
+  if (isSupabaseConfigured()) {
+    return { ok: true, ts: new Date().toISOString() };
+  }
   if (DEMO_MODE) {
     return { ok: true, ts: new Date().toISOString() };
   }
@@ -53,8 +61,8 @@ export async function ping(): Promise<{ ok: boolean; ts: string }> {
 }
 
 export async function getAsesores(): Promise<{ asesores?: Asesor[]; error?: string }> {
-  if (DEMO_MODE) {
-    await new Promise(r => setTimeout(r, 300));
+  if (DEMO_MODE || isSupabaseConfigured()) {
+    await new Promise(r => setTimeout(r, 100));
     return { asesores: ASESORES_DEMO };
   }
   try {
@@ -66,8 +74,13 @@ export async function getAsesores(): Promise<{ asesores?: Asesor[]; error?: stri
 }
 
 export async function nuevoFolio(sucursal: string): Promise<FolioResponse> {
+  if (isSupabaseConfigured()) {
+    const folio = await obtenerSiguienteFolioSupabase(sucursal);
+    return { folio, estado: 'BORRADOR' };
+  }
+
   if (DEMO_MODE) {
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 300));
     folioCounter++;
     const codigos: Record<string, string> = {
       'Villa Lucre': 'VL', 'Tumba Muerto': 'TM',
@@ -76,6 +89,7 @@ export async function nuevoFolio(sucursal: string): Promise<FolioResponse> {
     const codigo = codigos[sucursal] || 'GEN';
     return { folio: `PED-${codigo}-${folioCounter}`, estado: 'BORRADOR' };
   }
+
   try {
     const res = await fetch(`${getWebAppUrl()}?accion=nuevoFolio&sucursal=${encodeURIComponent(sucursal)}`);
     return await res.json();
@@ -85,6 +99,15 @@ export async function nuevoFolio(sucursal: string): Promise<FolioResponse> {
 }
 
 export async function transmitirPedido(payload: any): Promise<TransmisionResponse> {
+  if (isSupabaseConfigured()) {
+    const res = await guardarPedidoSupabase(payload);
+    return {
+      estado: res.ok ? 'TRANSMITIDO' : 'BORRADOR',
+      folio: res.folio,
+      timestamp: res.timestamp,
+    };
+  }
+
   if (DEMO_MODE) {
     await new Promise(r => setTimeout(r, 1000));
     return {
@@ -93,6 +116,7 @@ export async function transmitirPedido(payload: any): Promise<TransmisionRespons
       timestamp: new Date().toISOString()
     };
   }
+
   try {
     const res = await fetch(getWebAppUrl(), {
       method: 'POST',

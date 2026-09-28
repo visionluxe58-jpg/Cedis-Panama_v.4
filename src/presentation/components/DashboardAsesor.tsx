@@ -228,7 +228,9 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
       cliente,
       modeloChangan: modelo,
       vin,
+      placa,
       noCotizacion,
+      observaciones,
       lineas
     });
     if (res.estado === 'TRANSMITIDO') {
