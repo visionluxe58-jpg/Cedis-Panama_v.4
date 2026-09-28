@@ -263,3 +263,25 @@ export interface UsuarioActivo {
   rol: 'ADMINISTRADOR_CEDIS' | 'ASESOR';
   sucursal?: string;
 }
+
+// ========== RASTREADOR UNIVERSAL ==========
+export interface FilaRastreador {
+  lineaId: string;
+  pedidoId: string;
+  codigoRepuesto: string;
+  descripcionOficial: string;
+  cantidadSolicitada: number;
+  cantidadAsignada: number;
+  cantidadDespachada: number;
+  estatusLinea: string;
+  contenedorAsignado: string;
+  palletAsignado: string;
+  packageNo: string;
+  ubicacionCedis: string;
+  sucursal: string;
+  colaborador: string;
+  cliente: string;
+  modeloChangan: string;
+  numeroOR: string;
+  vin: string;
+}
