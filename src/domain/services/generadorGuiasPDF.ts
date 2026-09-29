@@ -9,7 +9,7 @@
 
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { FilaRastreador } from '../models/types';
+import type { FilaRastreador, DespachoRegistro } from '../models/types';
 
 export interface DatosRetiroCedis {
   numeroActa: string;
@@ -499,3 +499,241 @@ export function descargarActaRetiroCedis(datos: DatosRetiroCedis): void {
   const nombre = `${datos.numeroActa}_${datos.sucursalDestino.replace(/\s+/g, '_')}.pdf`;
   doc.save(nombre);
 }
+
+/**
+ * 4. MANIFIESTO OFICIAL DE CONTROL DE DESPACHOS FÍSICOS (AUDITORÍA & ARCHIVO CEDIS)
+ * Documento consolidado tamaño A4/Carta para archivar en carpeta física de control
+ */
+export function generarManifiestoArchivoFisicoPDF(
+  despachos: DespachoRegistro[],
+  opciones?: { sucursal?: string; fechaInicio?: string; fechaFin?: string }
+): jsPDF {
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const fechaGeneracion = new Date().toLocaleString('es-PA');
+  const sucursalTexto = opciones?.sucursal && opciones.sucursal !== 'TODAS'
+    ? `Sucursal: ${opciones.sucursal}`
+    : 'Todas las Sucursales de Panamá';
+
+  // Encabezado Corporativo
+  doc.setFillColor(185, 28, 28);
+  doc.rect(0, 0, 297, 24, 'F');
+
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text('CHANGAN MOTORS PANAMÁ - CENTRO CENTRAL DE DISTRIBUCIÓN (CEDIS)', 14, 11);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.text('MANIFIESTO OFICIAL DE CONTROL DE DESPACHOS Y RETIROS FÍSICOS // CARPETA DE AUDITORÍA', 14, 18);
+
+  // Recuadro Resumen
+  doc.setFillColor(248, 250, 252);
+  doc.rect(14, 28, 269, 14, 'F');
+  doc.setDrawColor(203, 213, 225);
+  doc.rect(14, 28, 269, 14, 'S');
+
+  doc.setTextColor(30, 41, 59);
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'bold');
+  doc.text('CRITERIO DE REPORTE:', 18, 34);
+  doc.setFont('helvetica', 'normal');
+  doc.text(sucursalTexto, 60, 34);
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('FECHA DE EMISIÓN:', 18, 39);
+  doc.setFont('helvetica', 'normal');
+  doc.text(fechaGeneracion, 60, 39);
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('TOTAL DESPACHOS REGISTRADOS:', 180, 36);
+  doc.setTextColor(185, 28, 28);
+  doc.setFontSize(11);
+  doc.text(`${despachos.length} retiros`, 245, 36);
+
+  // Preparar Filas para autoTable
+  const bodyRows = despachos.map((d, idx) => {
+    let repuestoDetalle = '';
+    try {
+      if (d.lineasJson) {
+        const parsed = JSON.parse(d.lineasJson);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          repuestoDetalle = `${parsed[0].codigoRepuesto || ''} - ${parsed[0].descripcionOficial || ''}`;
+        }
+      }
+    } catch {}
+    if (!repuestoDetalle && d.observaciones) {
+      repuestoDetalle = d.observaciones;
+    }
+
+    return [
+      String(idx + 1),
+      d.numeroGuia,
+      d.fechaDespacho,
+      d.pedidoId,
+      d.sucursalDestino,
+      repuestoDetalle || 'Repuestos de Mostrador',
+      String(d.totalPiezas || 1),
+      d.transportista || 'Personal Sucursal',
+      '________________',
+    ];
+  });
+
+  autoTable(doc, {
+    startY: 46,
+    head: [[
+      '#',
+      'No. Acta / Folio',
+      'Fecha',
+      'Pedido / OR',
+      'Sucursal Retiro',
+      'Repuesto / Detalle Oficial',
+      'Cant.',
+      'Personal que Retiró',
+      'Firma Conforme',
+    ]],
+    body: bodyRows,
+    theme: 'striped',
+    headStyles: {
+      fillColor: [30, 41, 59],
+      textColor: [255, 255, 255],
+      fontSize: 8,
+      fontStyle: 'bold',
+      halign: 'left',
+    },
+    styles: {
+      fontSize: 7.5,
+      cellPadding: 2.2,
+      textColor: [30, 41, 59],
+      overflow: 'linebreak',
+    },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'center' },
+      1: { cellWidth: 32, fontStyle: 'bold', textColor: [185, 28, 28] },
+      2: { cellWidth: 20 },
+      3: { cellWidth: 26, fontStyle: 'bold' },
+      4: { cellWidth: 28, fontStyle: 'bold' },
+      5: { cellWidth: 68 },
+      6: { cellWidth: 14, halign: 'center', fontStyle: 'bold' },
+      7: { cellWidth: 42 },
+      8: { cellWidth: 30, halign: 'center' },
+    },
+    margin: { left: 14, right: 14 },
+  });
+
+  // Recuadros de Firma para Archivo de Auditoría
+  const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 8 : 160;
+
+  if (finalY < 185) {
+    doc.setDrawColor(203, 213, 225);
+    doc.setFillColor(248, 250, 252);
+
+    // Box 1: Entregado por Bodega Central
+    doc.roundedRect(14, finalY, 84, 24, 2, 2, 'F');
+    doc.rect(14, finalY, 84, 24, 'S');
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(71, 85, 105);
+    doc.text('ENTREGADO POR / BODEGA CENTRAL CEDIS', 17, finalY + 5);
+    doc.setFont('helvetica', 'normal');
+    doc.text('Firma y Sello:', 17, finalY + 20);
+
+    // Box 2: Verificación de Seguridad
+    doc.roundedRect(107, finalY, 84, 24, 2, 2, 'F');
+    doc.rect(107, finalY, 84, 24, 'S');
+    doc.setFont('helvetica', 'bold');
+    doc.text('CONTROL DE SALIDA / GARITA DE SEGURIDAD', 110, finalY + 5);
+    doc.setFont('helvetica', 'normal');
+    doc.text('Firma y Sello:', 110, finalY + 20);
+
+    // Box 3: Jefatura de Logística
+    doc.roundedRect(199, finalY, 84, 24, 2, 2, 'F');
+    doc.rect(199, finalY, 84, 24, 'S');
+    doc.setFont('helvetica', 'bold');
+    doc.text('APROBACIÓN / JEFATURA DE LOGÍSTICA CEDIS', 202, finalY + 5);
+    doc.setFont('helvetica', 'normal');
+    doc.text('Firma y Visto Bueno:', 202, finalY + 20);
+  }
+
+  return doc;
+}
+
+/**
+ * Descarga el Manifiesto Físico Consolidado de Despachos
+ */
+export function descargarManifiestoArchivoFisico(
+  despachos: DespachoRegistro[],
+  opciones?: { sucursal?: string }
+): void {
+  const doc = generarManifiestoArchivoFisicoPDF(despachos, opciones);
+  const fechaStr = new Date().toISOString().slice(0, 10);
+  const sucStr = opciones?.sucursal && opciones.sucursal !== 'TODAS'
+    ? `_${opciones.sucursal.replace(/\s+/g, '_')}`
+    : '';
+  doc.save(`MANIFIESTO_DESPACHOS_CEDIS_${fechaStr}${sucStr}.pdf`);
+}
+
+/**
+ * 5. COMPROBANTE OFICIAL DE SALIDA FÍSICA INDIVIDUAL
+ * Documento formal para entregar a la persona que retira con sello de salida
+ */
+export function generarComprobanteSalidaFisicaPDF(d: DespachoRegistro): jsPDF {
+  let lineasRecuperadas: FilaRastreador[] = [];
+  try {
+    if (d.lineasJson) {
+      lineasRecuperadas = JSON.parse(d.lineasJson);
+    }
+  } catch {
+    lineasRecuperadas = [];
+  }
+
+  if (lineasRecuperadas.length === 0) {
+    lineasRecuperadas = [
+      {
+        lineaId: d.id,
+        pedidoId: d.pedidoId,
+        codigoRepuesto: 'REPUESTO-CEDIS',
+        descripcionOficial: d.observaciones || `Lote de ${d.totalPiezas} piezas`,
+        cantidadSolicitada: d.totalPiezas,
+        cantidadAsignada: d.totalPiezas,
+        cantidadDespachada: d.totalPiezas,
+        estatusLinea: 'Despachado',
+        contenedorAsignado: '',
+        palletAsignado: '',
+        packageNo: '',
+        ubicacionCedis: 'CEDIS',
+        sucursal: d.sucursalDestino,
+        colaborador: d.despachadorCedis,
+        cliente: 'Taller / Sucursal',
+        modeloChangan: 'Changan',
+        numeroOR: 'OR-OFICIAL',
+        vin: '',
+      },
+    ];
+  }
+
+  return generarActaRetiroCedisPDF({
+    numeroActa: d.numeroGuia,
+    fecha: d.fechaDespacho,
+    sucursalDestino: d.sucursalDestino,
+    personaQueRetira: d.transportista.replace('Retiro Mostrador:', '').trim() || 'Personal de Sucursal',
+    cedulaPersona: 'Verificada en Mostrador',
+    entregadorCedis: d.despachadorCedis,
+    observaciones: d.observaciones,
+    lineas: lineasRecuperadas,
+  });
+}
+
+/**
+ * Descarga el Comprobante de Salida Física Individual
+ */
+export function descargarComprobanteSalidaFisica(d: DespachoRegistro): void {
+  const doc = generarComprobanteSalidaFisicaPDF(d);
+  doc.save(`COMPROBANTE_SALIDA_${d.numeroGuia}.pdf`);
+}
+

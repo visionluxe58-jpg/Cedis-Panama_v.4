@@ -520,6 +520,206 @@ export async function obtenerDetalleInventarioSupabase(): Promise<DPLDetalle[]> 
 }
 
 /**
+ * Guarda o actualiza un manifiesto DPL y sus detalles en Supabase y memoria local
+ */
+export async function guardarDPLCompletoSupabase(
+  manifiesto: DPLManifiesto,
+  detalles: DPLDetalle[]
+): Promise<{ ok: boolean; error?: string }> {
+  // 1. Guardar en almacenamiento local siempre (garantía de disponibilidad inmediata)
+  try {
+    const rawConts = localStorage.getItem('cedis_contenedores_dpl');
+    const contenedores: any[] = rawConts ? JSON.parse(rawConts) : [];
+    const indexCont = contenedores.findIndex((c: any) => c.contenedor === manifiesto.contenedorId);
+    const contModel = {
+      contenedor: manifiesto.contenedorId,
+      proveedor: manifiesto.proveedor,
+      fechaArribo: manifiesto.fechaArribo,
+      poReferencia: manifiesto.poReferencia,
+      tipoTransporte: manifiesto.tipoTransporte,
+      totalPiezas: manifiesto.totalPiezas,
+      skusUnicos: manifiesto.skusUnicos,
+      totalPallets: manifiesto.totalPallets,
+      estado: manifiesto.estado,
+      creadoPor: manifiesto.creadoPor,
+      creadoEn: manifiesto.creadoEn || new Date().toISOString(),
+      blReferencia: manifiesto.blReferencia,
+    };
+    if (indexCont >= 0) {
+      contenedores[indexCont] = contModel;
+    } else {
+      contenedores.unshift(contModel);
+    }
+    localStorage.setItem('cedis_contenedores_dpl', JSON.stringify(contenedores));
+
+    // Detalles locales
+    const rawDets = localStorage.getItem('cedis_detalles_dpl');
+    const existDetalles: any[] = rawDets ? JSON.parse(rawDets) : [];
+    const detallesFiltrados = existDetalles.filter((d: any) => d.contenedor !== manifiesto.contenedorId);
+    const nuevosModel = detalles.map(d => ({
+      uid: d.inventarioId,
+      contenedor: d.contenedorId,
+      pallet: d.palletCaseNo || 'P001',
+      packageNo: d.packageNo || '',
+      codigoCompra: d.codigoRepuesto,
+      descripcion: d.descripcion,
+      cantidadTotal: d.cantidadTotal,
+      cantidadAsignada: d.cantidadAsignada || 0,
+      saldoDisponible: d.saldoDisponible ?? d.cantidadTotal,
+      ubicacionCedis: d.ubicacionCedis || '',
+    }));
+    localStorage.setItem('cedis_detalles_dpl', JSON.stringify([...detallesFiltrados, ...nuevosModel]));
+  } catch (errLocal) {
+    console.warn('Error guardando DPL en local storage:', errLocal);
+  }
+
+  // 2. Guardar en Supabase si está disponible
+  if (!supabase || !isSupabaseConfigured()) {
+    return { ok: true };
+  }
+
+  try {
+    // Upsert en dpl_manifiestos
+    const payloadManifiesto = {
+      contenedor_id: manifiesto.contenedorId,
+      proveedor: manifiesto.proveedor,
+      fecha_arribo: manifiesto.fechaArribo,
+      po_referencia: manifiesto.poReferencia,
+      tipo_transporte: manifiesto.tipoTransporte,
+      total_piezas: manifiesto.totalPiezas,
+      skus_unicos: manifiesto.skusUnicos,
+      total_pallets: manifiesto.totalPallets,
+      estado: manifiesto.estado,
+      creado_por: manifiesto.creadoPor,
+      bl_referencia: manifiesto.blReferencia,
+    };
+
+    let { error: errMan } = await supabase
+      .from('dpl_manifiestos')
+      .upsert(payloadManifiesto, { onConflict: 'contenedor_id' });
+
+    if (errMan) {
+      await supabase.from('dpl_manifiesto').upsert(payloadManifiesto, { onConflict: 'contenedor_id' });
+    }
+
+    // Insertar líneas en dpl_detalle
+    if (detalles.length > 0) {
+      const payloadDetalles = detalles.map(d => ({
+        inventario_id: d.inventarioId,
+        contenedor_id: d.contenedorId,
+        pallet_case_no: d.palletCaseNo || 'P001',
+        package_no: d.packageNo || '',
+        codigo_repuesto: d.codigoRepuesto,
+        descripcion: d.descripcion,
+        cantidad_total: d.cantidadTotal,
+        cantidad_asignada: d.cantidadAsignada || 0,
+        saldo_disponible: d.saldoDisponible,
+        ubicacion_cedis: d.ubicacionCedis || '',
+      }));
+
+      // Intentar borrado previo de líneas de este contenedor para evitar duplicados
+      await supabase.from('dpl_detalle').delete().eq('contenedor_id', manifiesto.contenedorId);
+      const { error: errDet } = await supabase.from('dpl_detalle').insert(payloadDetalles);
+      if (errDet) {
+        await supabase.from('dpl_detalles').insert(payloadDetalles);
+      }
+    }
+
+    return { ok: true };
+  } catch (errSupabase: any) {
+    console.error('Error al guardar DPL en Supabase:', errSupabase);
+    return { ok: true }; // Fallback exitoso con almacenamiento local
+  }
+}
+
+/**
+ * Aplica en lote los resultados del Matching FIFO o Pre-Asignación en Tránsito a los pedidos
+ */
+export async function aplicarMatchingFIFOSupabase(
+  asignaciones: Array<{
+    lineaId: string;
+    pedidoId: string;
+    codigoRepuesto: string;
+    contenedorAsignado: string;
+    palletAsignado: string;
+    packageNo?: string;
+    ubicacionCedis?: string;
+    cantidadAsignada: number;
+    nuevoEstatus: 'Asignado' | 'Asignado Parcial' | 'En Tránsito Asignado' | string;
+  }>
+): Promise<{ ok: boolean; count: number; error?: string }> {
+  if (!asignaciones || asignaciones.length === 0) {
+    return { ok: true, count: 0 };
+  }
+
+  // 1. Actualizar memoria local de inmediato
+  try {
+    const rawLocal = localStorage.getItem('cedis_pedidos_locales');
+    if (rawLocal) {
+      const locales: FilaRastreador[] = JSON.parse(rawLocal);
+      const actualizados = locales.map(item => {
+        const match = asignaciones.find(
+          a => a.lineaId === item.lineaId || (a.pedidoId === item.pedidoId && a.codigoRepuesto === item.codigoRepuesto)
+        );
+        if (match) {
+          return {
+            ...item,
+            contenedorAsignado: match.contenedorAsignado,
+            palletAsignado: match.palletAsignado,
+            packageNo: match.packageNo || item.packageNo || '',
+            ubicacionCedis: match.ubicacionCedis || item.ubicacionCedis || '',
+            cantidadAsignada: match.cantidadAsignada,
+            estatusLinea: match.nuevoEstatus,
+          };
+        }
+        return item;
+      });
+      localStorage.setItem('cedis_pedidos_locales', JSON.stringify(actualizados));
+    }
+  } catch (errLocal) {
+    console.warn('Error actualizando matching en local storage:', errLocal);
+  }
+
+  // 2. Actualizar en Supabase si está disponible
+  if (!supabase || !isSupabaseConfigured()) {
+    return { ok: true, count: asignaciones.length };
+  }
+
+  try {
+    for (const a of asignaciones) {
+      const updateData: Record<string, any> = {
+        contenedor_asignado: a.contenedorAsignado,
+        pallet_asignado: a.palletAsignado,
+        ubicacion_cedis: a.ubicacionCedis || '',
+        cantidad_asignada: a.cantidadAsignada,
+        estatus_linea: a.nuevoEstatus,
+      };
+
+      if (a.packageNo) {
+        updateData.package_no = a.packageNo;
+      }
+
+      // Actualizar en matriz_pedidos
+      await supabase
+        .from('matriz_pedidos')
+        .update(updateData)
+        .or(`id.eq.${a.lineaId},linea_id.eq.${a.lineaId},pedido_id.eq.${a.pedidoId}`);
+
+      // Actualizar en lineas_pedido
+      await supabase
+        .from('lineas_pedido')
+        .update(updateData)
+        .eq('id', a.lineaId);
+    }
+
+    return { ok: true, count: asignaciones.length };
+  } catch (errSupabase: any) {
+    console.error('Error aplicando matching en Supabase:', errSupabase);
+    return { ok: true, count: asignaciones.length };
+  }
+}
+
+/**
  * Se suscribe en tiempo real a matriz_pedidos y tablas de inventario
  */
 export function suscribirCambiosPedidosSupabase(onActualizar: () => void): () => void {

@@ -13,6 +13,7 @@ import type {
   EncargadoSucursal,
 } from '../../domain/models/types';
 import { ModalRastreadorUniversal } from './ModalRastreadorUniversal';
+import { ModalCargaDPL } from './ModalCargaDPL';
 import { calcularKPIs, ejecutarMatchingFIFO } from '../../domain/services';
 import { CruceDPL } from './CruceDPL';
 import {
@@ -28,12 +29,15 @@ import {
   obtenerEncargadosSupabase,
   eliminarPedidosSupabase,
   depurarYMigrarDespachadosSupabase,
+  aplicarMatchingFIFOSupabase,
 } from '../../data/api/supabaseClient';
 import {
   descargarEtiquetaPedido,
   descargarEtiquetasEnLote,
   descargarActaRetiroCedis,
   descargarGuiaDespacho,
+  descargarManifiestoArchivoFisico,
+  descargarComprobanteSalidaFisica,
 } from '../../domain/services/generadorGuiasPDF';
 
 interface AdminDashboardProps {
@@ -480,6 +484,209 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     setModalRackAbierto(false);
     setItemAEditarRack(null);
     notificar(`Ubicación actualizada a ${nuevaUbicacionInput.trim().toUpperCase()}`);
+  };
+
+  // Modo de visualización en Matching: 'transito' (pre-arribo / en camino) vs 'bodega' (inventario recibido)
+  const [modoMatching, setModoMatching] = useState<'transito' | 'bodega'>('transito');
+  const [aplicandoMatching, setAplicandoMatching] = useState(false);
+
+  // Callback cuando se sube un DPL
+  const handleDPLCargado = (nuevoMan: DPLManifiesto, nuevosDetalles: DPLDetalle[]) => {
+    setManifiestos(prev => {
+      const idx = prev.findIndex(m => m.contenedorId === nuevoMan.contenedorId);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = nuevoMan;
+        return copy;
+      }
+      return [nuevoMan, ...prev];
+    });
+
+    setInventario(prev => {
+      const otros = prev.filter(i => i.contenedorId !== nuevoMan.contenedorId);
+      return [...nuevosDetalles, ...otros];
+    });
+
+    notificar(`¡Manifiesto ${nuevoMan.contenedorId} registrado con éxito! ${nuevosDetalles.length} repuestos cargados.`);
+  };
+
+  // Cálculo de Pre-Arribo: Contenedores en camino (EN TRÁNSITO / ADUANA)
+  // Determina en qué pallet y contenedor viene cada repuesto del cliente antes de llegar
+  const preMatchingTransito = useMemo(() => {
+    const contsEnCamino = manifiestos.filter(
+      m => m.estado === 'EN TRÁNSITO' || m.estado === 'ADUANA'
+    );
+    const setContsEnCamino = new Set(contsEnCamino.map(c => c.contenedorId));
+
+    const piezasEnCamino = inventario.filter(i => setContsEnCamino.has(i.contenedorId));
+    const pedidosPendientes = filas.filter(f => f.estatusLinea !== 'Despachado');
+
+    return pedidosPendientes.map(f => {
+      const cod = (f.codigoRepuesto || '').trim().toUpperCase();
+      const match = piezasEnCamino.find(p => (p.codigoRepuesto || '').trim().toUpperCase() === cod);
+      const contenedorMeta = contsEnCamino.find(c => c.contenedorId === match?.contenedorId);
+
+      const vieneEnCamino = Boolean(match);
+
+      return {
+        lineaId: f.lineaId,
+        pedidoId: f.pedidoId,
+        codigoRepuesto: f.codigoRepuesto,
+        descripcionOficial: f.descripcionOficial,
+        sucursal: f.sucursal,
+        cliente: f.cliente,
+        numeroOR: f.numeroOR,
+        cantidadSolicitada: f.cantidadSolicitada,
+        vieneEnCamino,
+        contenedorEnCamino: match?.contenedorId || f.contenedorAsignado || 'Sin embarque',
+        palletEnCamino: match?.palletCaseNo || f.palletAsignado || 'Por asignar',
+        packageNo: match?.packageNo || f.packageNo || '',
+        eta: contenedorMeta?.fechaArribo || 'Pendiente',
+        estadoEmbarque: contenedorMeta?.estado || 'POR EMBARCAR',
+      };
+    });
+  }, [filas, inventario, manifiestos]);
+
+  // Aplicar Pre-Asignación en Tránsito a los pedidos
+  const handleAplicarPreAsignacionTransito = async () => {
+    const listosParaPreAsignar = preMatchingTransito.filter(p => p.vieneEnCamino);
+    if (listosParaPreAsignar.length === 0) {
+      notificar('No hay repuestos en contenedores en tránsito que coincidan con pedidos pendientes.');
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `¿Desea pre-asignar contenedor y pallet a ${listosParaPreAsignar.length} pedidos?\n\n` +
+      'Esto registrará en el sistema el número de contenedor y pallet de llegada para que las sucursales y clientes sepan dónde viene su repuesto antes del arribo físico.'
+    );
+    if (!confirmar) return;
+
+    setAplicandoMatching(true);
+    try {
+      const payload = listosParaPreAsignar.map(p => ({
+        lineaId: p.lineaId,
+        pedidoId: p.pedidoId,
+        codigoRepuesto: p.codigoRepuesto,
+        contenedorAsignado: p.contenedorEnCamino,
+        palletAsignado: p.palletEnCamino,
+        packageNo: p.packageNo,
+        ubicacionCedis: `CEDIS-${p.palletEnCamino}`,
+        cantidadAsignada: p.cantidadSolicitada,
+        nuevoEstatus: 'En Tránsito Asignado',
+      }));
+
+      await aplicarMatchingFIFOSupabase(payload);
+
+      setFilas(prev =>
+        prev.map(f => {
+          const match = payload.find(p => p.lineaId === f.lineaId || p.pedidoId === f.pedidoId);
+          if (match) {
+            return {
+              ...f,
+              contenedorAsignado: match.contenedorAsignado,
+              palletAsignado: match.palletAsignado,
+              packageNo: match.packageNo,
+              ubicacionCedis: match.ubicacionCedis,
+              estatusLinea: 'En Tránsito Asignado',
+            };
+          }
+          return f;
+        })
+      );
+
+      notificar(`¡Pre-asignación aplicada! ${listosParaPreAsignar.length} pedidos actualizados con contenedor y pallet en tránsito.`);
+    } catch (err) {
+      console.error('Error aplicando pre-asignación:', err);
+      notificar('Error al aplicar pre-asignación.');
+    } finally {
+      setAplicandoMatching(false);
+    }
+  };
+
+  // Aplicar Matching FIFO Definitivo (Mercancía Recibida en Bodega)
+  const handleAplicarMatchingFIFODefinitivo = async () => {
+    const asignables = matchingResult.detalles.filter(
+      (d: any) => d.estatusLinea === 'Asignado' || d.estatusLinea === 'Asignado Parcial'
+    );
+
+    if (asignables.length === 0) {
+      notificar('No hay pedidos con stock disponible en bodega para asignar.');
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `¿Desea aplicar la asignación en firme a ${asignables.length} pedidos?\n\n` +
+      'Esto reservará formalmente el stock en bodega, actualizará el estatus a "Asignado" y habilitará la emisión de etiquetas de despacho.'
+    );
+    if (!confirmar) return;
+
+    setAplicandoMatching(true);
+    try {
+      const payload = asignables.map((d: any) => ({
+        lineaId: d.lineaId,
+        pedidoId: d.pedidoId,
+        codigoRepuesto: d.codigoRepuesto,
+        contenedorAsignado: d.contenedorAsignado,
+        palletAsignado: d.palletAsignado,
+        packageNo: d.packageNo,
+        ubicacionCedis: d.ubicacionCedis || `CEDIS-${d.palletAsignado || 'A1'}`,
+        cantidadAsignada: d.cantidadAsignada,
+        nuevoEstatus: d.estatusLinea as any,
+      }));
+
+      await aplicarMatchingFIFOSupabase(payload);
+
+      setFilas(prev =>
+        prev.map(f => {
+          const match = payload.find((p: any) => p.lineaId === f.lineaId || (p.pedidoId === f.pedidoId && p.codigoRepuesto === f.codigoRepuesto));
+          if (match) {
+            return {
+              ...f,
+              contenedorAsignado: match.contenedorAsignado,
+              palletAsignado: match.palletAsignado,
+              packageNo: match.packageNo,
+              ubicacionCedis: match.ubicacionCedis,
+              cantidadAsignada: match.cantidadAsignada,
+              estatusLinea: match.nuevoEstatus,
+            };
+          }
+          return f;
+        })
+      );
+
+      notificar(`¡Matching FIFO completado! ${asignables.length} pedidos actualizados a Asignado.`);
+    } catch (err) {
+      console.error('Error aplicando matching FIFO:', err);
+      notificar('Error al procesar matching.');
+    } finally {
+      setAplicandoMatching(false);
+    }
+  };
+
+  // Imprimir etiquetas en masa para todos los pedidos matcheados / asignados
+  const handleImprimirEtiquetasMatcheados = () => {
+    const pedidosMatcheados = filas.filter(
+      f => f.estatusLinea === 'Asignado' || f.estatusLinea === 'En Tránsito Asignado' || f.cantidadAsignada > 0
+    );
+
+    if (pedidosMatcheados.length === 0) {
+      notificar('No hay pedidos asignados/matcheados con stock para generar etiquetas.');
+      return;
+    }
+
+    descargarEtiquetasEnLote(pedidosMatcheados);
+    notificar(`Generando PDF con ${pedidosMatcheados.length} etiquetas de repuestos matcheados...`);
+  };
+
+  // Descargar Manifiesto Físico para Carpeta de Archivo de Auditoría
+  const handleDescargarManifiestoFisico = () => {
+    if (despachosFiltrados.length === 0) {
+      notificar('No hay registros de despachos para generar el manifiesto.');
+      return;
+    }
+
+    descargarManifiestoArchivoFisico(despachosFiltrados, { sucursal: filtroSucursal });
+    notificar(`Generando Manifiesto Oficial de Despachos Físicos (${despachosFiltrados.length} registros)...`);
   };
 
   // Consolidación de despachos: Registros de Despachos + Filas de matriz que ya fueron despachadas
@@ -1185,7 +1392,16 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleDescargarManifiestoFisico}
+                    className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow-sm border border-slate-700"
+                    title="Generar e imprimir Manifiesto Consolidado de Despachos Físicos para archivar en carpeta física de auditoría de CEDIS"
+                  >
+                    <i className="fas fa-print text-red-400"></i>
+                    <span>📑 Manifiesto Archivo Físico (PDF)</span>
+                  </button>
+
                   <span className="text-xs font-bold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 hidden sm:inline-block">
                     Total Despachados: {despachosConsolidados.length}
                   </span>
@@ -1273,13 +1489,24 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                               </span>
                             </td>
                             <td className="py-3 px-4 text-right">
-                              <button
-                                onClick={() => handleReDescargarActa(d)}
-                                className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded font-semibold text-xs transition-colors flex items-center gap-1.5 ml-auto shadow-sm"
-                              >
-                                <i className="fas fa-file-pdf"></i>
-                                <span>Descargar Acta PDF</span>
-                              </button>
+                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                <button
+                                  onClick={() => handleReDescargarActa(d)}
+                                  className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded font-semibold text-xs transition-colors flex items-center gap-1 shadow-sm"
+                                  title="Descargar Acta de Retiro en Mostrador"
+                                >
+                                  <i className="fas fa-file-pdf"></i>
+                                  <span>Acta PDF</span>
+                                </button>
+                                <button
+                                  onClick={() => descargarComprobanteSalidaFisica(d)}
+                                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded font-semibold text-xs transition-colors flex items-center gap-1 shadow-sm"
+                                  title="Imprimir Comprobante Oficial de Salida Física de Bodega para archivo físico"
+                                >
+                                  <i className="fas fa-file-signature text-emerald-600"></i>
+                                  <span>Salida Física</span>
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1497,84 +1724,314 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         {/* ========================================================================= */}
         {/* VISTA 5: MATCHING FIFO                                                    */}
         {/* ========================================================================= */}
-        {vistaActiva === 'matching' && (
-          <div className="space-y-6">
-            <div className="bg-slate-950 rounded-2xl p-6 text-white shadow-xl">
-              <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
-                <i className="fas fa-random text-rose-500"></i>
-                Motor de Conciliación Automática FIFO (First In, First Out)
-              </h2>
+        {/* ========================================================================= */}
+        {/* VISTA 5: MOTOR DE MATCHING INTERACTIVO & PRE-ARRIBO                       */}
+        {/* ========================================================================= */}
+        {vistaActiva === 'matching' && (() => {
+          const cantEnCamino = preMatchingTransito.filter(p => p.vieneEnCamino).length;
+          const cantMatcheados = filas.filter(
+            f => f.estatusLinea === 'Asignado' || f.estatusLinea === 'En Tránsito Asignado' || f.cantidadAsignada > 0
+          ).length;
 
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                  <div className="text-slate-400 text-xs font-semibold uppercase mb-2">Total Líneas</div>
-                  <div className="text-3xl font-black text-white">{matchingResult.totalLineas}</div>
+          return (
+            <div className="space-y-6">
+              <div className="bg-slate-950 rounded-2xl p-6 text-white shadow-xl border border-slate-800">
+                {/* Cabecera y Botones de Acción Global */}
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-800">
+                  <div>
+                    <h2 className="text-xl font-bold flex items-center gap-2.5">
+                      <i className="fas fa-random text-rose-500"></i>
+                      <span>Motor de Matching, Pre-Arribo y Asignación de Repuestos</span>
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Cruce inteligente de pedidos contra DPLs marítimos en tránsito y stock físico en Bodega Central CEDIS.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    {/* Botón de Acción según pestaña activa */}
+                    {modoMatching === 'transito' ? (
+                      <button
+                        onClick={handleAplicarPreAsignacionTransito}
+                        disabled={cantEnCamino === 0 || aplicandoMatching}
+                        className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-blue-500/20 disabled:opacity-50 transition-all cursor-pointer"
+                        title="Registra contenedor y pallet en los pedidos antes del arribo"
+                      >
+                        <i className={`fas ${aplicandoMatching ? 'fa-spinner fa-spin' : 'fa-bolt text-yellow-300'}`}></i>
+                        <span>Aplicar Pre-Asignación en Tránsito ({cantEnCamino})</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleAplicarMatchingFIFODefinitivo}
+                        disabled={matchingResult.asignadasTotales === 0 || aplicandoMatching}
+                        className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-500/20 disabled:opacity-50 transition-all cursor-pointer"
+                        title="Reserva stock recibido en bodega para los pedidos según FIFO"
+                      >
+                        <i className={`fas ${aplicandoMatching ? 'fa-spinner fa-spin' : 'fa-check-double text-emerald-200'}`}></i>
+                        <span>Aplicar Matching FIFO en Firme ({matchingResult.asignadasTotales})</span>
+                      </button>
+                    )}
+
+                    {/* Botón Masivo de Impresión de Etiquetas */}
+                    <button
+                      onClick={handleImprimirEtiquetasMatcheados}
+                      disabled={cantMatcheados === 0}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-xs rounded-xl shadow-lg shadow-amber-500/20 disabled:opacity-50 transition-all cursor-pointer"
+                      title="Imprime todas las etiquetas adhesivas 100x150mm de repuestos con contenedor/pallet asignado"
+                    >
+                      <i className="fas fa-tags text-sm"></i>
+                      <span>Imprimir Etiquetas Masivas ({cantMatcheados})</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="bg-slate-900 border border-emerald-800/50 rounded-xl p-4 border-t-2 border-t-emerald-500">
-                  <div className="text-emerald-400 text-xs font-semibold uppercase mb-2">Asignadas Total</div>
-                  <div className="text-3xl font-black text-emerald-400">{matchingResult.asignadasTotales}</div>
+                {/* Selector de Sub-Pestañas */}
+                <div className="flex items-center gap-3 pt-6 pb-2">
+                  <button
+                    onClick={() => setModoMatching('transito')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      modoMatching === 'transito'
+                        ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/25 ring-2 ring-blue-400/40'
+                        : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <i className="fas fa-ship"></i>
+                    <span>Pre-Arribo: En Tránsito por Pallet / Contenedor</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-blue-500/30 text-blue-200 border border-blue-400/30 font-mono">
+                      {cantEnCamino} coincidencia{cantEnCamino !== 1 ? 's' : ''}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setModoMatching('bodega')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      modoMatching === 'bodega'
+                        ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/25 ring-2 ring-blue-400/40'
+                        : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <i className="fas fa-boxes"></i>
+                    <span>Bodega CEDIS: Inventario Físico Recibido (FIFO)</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/30 text-emerald-200 border border-emerald-400/30 font-mono">
+                      {matchingResult.asignadasTotales} asignables
+                    </span>
+                  </button>
                 </div>
 
-                <div className="bg-slate-900 border border-amber-800/50 rounded-xl p-4 border-t-2 border-t-amber-500">
-                  <div className="text-amber-400 text-xs font-semibold uppercase mb-2">Asignadas Parcial</div>
-                  <div className="text-3xl font-black text-amber-400">{matchingResult.asignadasParciales}</div>
-                </div>
+                {/* Sub-Pestaña 1: Pre-Arribo en Tránsito (Por Contenedor y Pallet) */}
+                {modoMatching === 'transito' ? (
+                  <div className="space-y-4 mt-4">
+                    {/* Alerta Informativa */}
+                    <div className="bg-blue-950/40 border border-blue-500/30 rounded-xl p-4 flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0 mt-0.5">
+                        <i className="fas fa-info-circle text-lg"></i>
+                      </div>
+                      <div className="text-xs">
+                        <p className="font-bold text-blue-200 text-sm">
+                          Visibilidad Anticipada de Carga en Alta Mar / Aduanas
+                        </p>
+                        <p className="text-blue-300/80 mt-1">
+                          Cruza en tiempo real los pedidos especiales de las sucursales con los DPLs en tránsito. Te permite saber con semanas de anticipación <strong>en qué contenedor marítimo</strong> y <strong>número de pallet/case exacto</strong> viene el repuesto de cada cliente para notificar inmediatamente al asesor.
+                        </p>
+                      </div>
+                    </div>
 
-                <div className="bg-slate-900 border border-rose-800/50 rounded-xl p-4 border-t-2 border-t-rose-500">
-                  <div className="text-rose-400 text-xs font-semibold uppercase mb-2">Sin Stock</div>
-                  <div className="text-3xl font-black text-rose-400">{matchingResult.sinStock}</div>
-                </div>
+                    {/* Tabla de Resultados Pre-Arribo */}
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-inner">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead className="bg-slate-800/80 border-b border-slate-700 text-slate-400 uppercase text-[11px]">
+                            <tr>
+                              <th className="px-4 py-3 text-left">Pedido / OR</th>
+                              <th className="px-4 py-3 text-left">Repuesto Solicitado</th>
+                              <th className="px-4 py-3 text-left">Sucursal & Asesor</th>
+                              <th className="px-4 py-3 text-center">Cant.</th>
+                              <th className="px-4 py-3 text-left">Contenedor en Camino</th>
+                              <th className="px-4 py-3 text-center">Pallet / Case No.</th>
+                              <th className="px-4 py-3 text-center">ETA Arribo</th>
+                              <th className="px-4 py-3 text-center">Estado Logístico</th>
+                              <th className="px-4 py-3 text-center">Etiqueta</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800">
+                            {preMatchingTransito.length === 0 ? (
+                              <tr>
+                                <td colSpan={9} className="px-6 py-12 text-center text-slate-500">
+                                  <i className="fas fa-box-open text-3xl mb-2 block opacity-40"></i>
+                                  No hay pedidos pendientes para cruzar con DPLs en tránsito.
+                                </td>
+                              </tr>
+                            ) : (
+                              preMatchingTransito.map((p, idx) => {
+                                const filaReal = filas.find(f => f.lineaId === p.lineaId || f.pedidoId === p.pedidoId);
+                                return (
+                                  <tr key={idx} className={`hover:bg-slate-800/40 transition-colors ${p.vieneEnCamino ? 'bg-blue-950/20' : ''}`}>
+                                    <td className="px-4 py-3">
+                                      <div className="font-mono font-bold text-white">{p.pedidoId}</div>
+                                      <div className="text-[10px] text-slate-400">{p.numeroOR || 'Sin OR'}</div>
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      <div className="font-mono text-cyan-400 font-bold">{p.codigoRepuesto}</div>
+                                      <div className="text-[11px] text-slate-300 truncate max-w-xs">{p.descripcionOficial}</div>
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      <div className="font-medium text-slate-200">{p.sucursal}</div>
+                                      <div className="text-[10px] text-slate-400">{p.cliente || 'Stock Sucursal'}</div>
+                                    </td>
+                                    <td className="px-4 py-3 text-center font-bold text-white">
+                                      {p.cantidadSolicitada}
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      {p.vieneEnCamino ? (
+                                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-500/20 text-blue-300 border border-blue-500/30 font-mono font-bold text-[11px]">
+                                          <i className="fas fa-ship text-blue-400 text-[10px]"></i>
+                                          {p.contenedorEnCamino}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-500 italic text-[11px]">Sin contenedor asignado</span>
+                                      )}
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                      {p.vieneEnCamino ? (
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono font-black text-xs">
+                                          <i className="fas fa-pallet text-[10px]"></i>
+                                          {p.palletEnCamino}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-500">-</span>
+                                      )}
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                      <div className="inline-flex items-center gap-1 text-slate-300 font-medium">
+                                        <i className="fas fa-calendar-alt text-slate-500 text-[10px]"></i>
+                                        {p.eta}
+                                      </div>
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                      <span
+                                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                          p.vieneEnCamino
+                                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                            : 'bg-slate-700/50 text-slate-400'
+                                        }`}
+                                      >
+                                        <span className={`w-1.5 h-1.5 rounded-full ${p.vieneEnCamino ? 'bg-emerald-400' : 'bg-slate-500'}`}></span>
+                                        {p.vieneEnCamino ? p.estadoEmbarque : 'POR EMBARCAR'}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                      {p.vieneEnCamino && filaReal && (
+                                        <button
+                                          onClick={() => descargarEtiquetaPedido(filaReal)}
+                                          className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded text-[11px] font-bold border border-amber-500/30 inline-flex items-center gap-1 transition-all cursor-pointer"
+                                          title="Imprimir etiqueta térmica 100x150mm"
+                                        >
+                                          <i className="fas fa-tag"></i>
+                                          <span>100x150mm</span>
+                                        </button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* Sub-Pestaña 2: Bodega CEDIS - Inventario Físico Recibido (FIFO) */
+                  <div className="space-y-6 mt-4">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                        <div className="text-slate-400 text-xs font-semibold uppercase mb-2">Total Líneas</div>
+                        <div className="text-3xl font-black text-white">{matchingResult.totalLineas}</div>
+                      </div>
 
-                <div className="bg-slate-900 border border-sky-800/50 rounded-xl p-4 border-t-2 border-t-sky-500">
-                  <div className="text-sky-400 text-xs font-semibold uppercase mb-2">Piezas Asignadas</div>
-                  <div className="text-3xl font-black text-sky-400">{matchingResult.piezasAsignadas}</div>
-                </div>
-              </div>
+                      <div className="bg-slate-900 border border-emerald-800/50 rounded-xl p-4 border-t-2 border-t-emerald-500">
+                        <div className="text-emerald-400 text-xs font-semibold uppercase mb-2">Asignadas Total</div>
+                        <div className="text-3xl font-black text-emerald-400">{matchingResult.asignadasTotales}</div>
+                      </div>
 
-              <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="bg-slate-800/60 border-b border-slate-700 text-slate-400 uppercase text-[11px]">
-                      <tr>
-                        <th className="px-4 py-3 text-left">Pedido</th>
-                        <th className="px-4 py-3 text-left">Código Repuesto</th>
-                        <th className="px-4 py-3 text-center">Solicitado</th>
-                        <th className="px-4 py-3 text-center">Asignado</th>
-                        <th className="px-4 py-3 text-left">Contenedor / Rack</th>
-                        <th className="px-4 py-3 text-center">Estado FIFO</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800">
-                      {matchingResult.detalles.map((detalle: any, idx: number) => (
-                        <tr key={idx} className="hover:bg-slate-800/30">
-                          <td className="px-4 py-3 font-mono text-slate-300">{detalle.pedidoId}</td>
-                          <td className="px-4 py-3 font-mono text-cyan-400 font-bold">{detalle.codigoRepuesto}</td>
-                          <td className="px-4 py-3 text-center font-bold">{detalle.cantidadSolicitada}</td>
-                          <td className="px-4 py-3 text-center font-bold text-emerald-400">{detalle.cantidadAsignada}</td>
-                          <td className="px-4 py-3 font-mono text-slate-400">{detalle.contenedorAsignado || 'En Bodega'}</td>
-                          <td className="px-4 py-3 text-center">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                detalle.estatusLinea === 'Asignado'
-                                  ? 'bg-emerald-500/20 text-emerald-400'
-                                  : detalle.estatusLinea === 'Asignado Parcial'
-                                  ? 'bg-amber-500/20 text-amber-400'
-                                  : 'bg-rose-500/20 text-rose-400'
-                              }`}
-                            >
-                              {detalle.estatusLinea}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      <div className="bg-slate-900 border border-amber-800/50 rounded-xl p-4 border-t-2 border-t-amber-500">
+                        <div className="text-amber-400 text-xs font-semibold uppercase mb-2">Asignadas Parcial</div>
+                        <div className="text-3xl font-black text-amber-400">{matchingResult.asignadasParciales}</div>
+                      </div>
+
+                      <div className="bg-slate-900 border border-rose-800/50 rounded-xl p-4 border-t-2 border-t-rose-500">
+                        <div className="text-rose-400 text-xs font-semibold uppercase mb-2">Sin Stock</div>
+                        <div className="text-3xl font-black text-rose-400">{matchingResult.sinStock}</div>
+                      </div>
+
+                      <div className="bg-slate-900 border border-sky-800/50 rounded-xl p-4 border-t-2 border-t-sky-500">
+                        <div className="text-sky-400 text-xs font-semibold uppercase mb-2">Piezas Asignadas</div>
+                        <div className="text-3xl font-black text-sky-400">{matchingResult.piezasAsignadas}</div>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead className="bg-slate-800/60 border-b border-slate-700 text-slate-400 uppercase text-[11px]">
+                            <tr>
+                              <th className="px-4 py-3 text-left">Pedido</th>
+                              <th className="px-4 py-3 text-left">Código Repuesto</th>
+                              <th className="px-4 py-3 text-center">Solicitado</th>
+                              <th className="px-4 py-3 text-center">Asignado</th>
+                              <th className="px-4 py-3 text-left">Contenedor / Rack</th>
+                              <th className="px-4 py-3 text-center">Estado FIFO</th>
+                              <th className="px-4 py-3 text-center">Etiqueta</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800">
+                            {matchingResult.detalles.map((detalle: any, idx: number) => {
+                              const filaReal = filas.find(f => f.lineaId === detalle.lineaId || f.pedidoId === detalle.pedidoId);
+                              return (
+                                <tr key={idx} className="hover:bg-slate-800/30">
+                                  <td className="px-4 py-3 font-mono text-slate-300">{detalle.pedidoId}</td>
+                                  <td className="px-4 py-3 font-mono text-cyan-400 font-bold">{detalle.codigoRepuesto}</td>
+                                  <td className="px-4 py-3 text-center font-bold">{detalle.cantidadSolicitada}</td>
+                                  <td className="px-4 py-3 text-center font-bold text-emerald-400">{detalle.cantidadAsignada}</td>
+                                  <td className="px-4 py-3 font-mono text-slate-400">{detalle.contenedorAsignado || 'En Bodega'}</td>
+                                  <td className="px-4 py-3 text-center">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                        detalle.estatusLinea === 'Asignado'
+                                          ? 'bg-emerald-500/20 text-emerald-400'
+                                          : detalle.estatusLinea === 'Asignado Parcial'
+                                          ? 'bg-amber-500/20 text-amber-400'
+                                          : 'bg-rose-500/20 text-rose-400'
+                                      }`}
+                                    >
+                                      {detalle.estatusLinea}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-center">
+                                    {detalle.cantidadAsignada > 0 && filaReal && (
+                                      <button
+                                        onClick={() => descargarEtiquetaPedido(filaReal)}
+                                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded text-[11px] font-bold border border-amber-500/30 inline-flex items-center gap-1 transition-all cursor-pointer"
+                                        title="Descargar etiqueta 100x150mm"
+                                      >
+                                        <i className="fas fa-tag"></i>
+                                        <span>100x150mm</span>
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ========================================================================= */}
         {/* VISTA 6: GESTIÓN DPL (Contenedores Marítimos)                              */}
@@ -1949,6 +2406,13 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         inventario={inventario}
         manifiestos={manifiestos}
         codigoInicial={codigoInicial}
+      />
+
+      {/* Modal Carga DPL (Excel / CSV / Portapapeles) */}
+      <ModalCargaDPL
+        isOpen={modalDPLAbierto}
+        onClose={() => setModalDPLAbierto(false)}
+        onDPLCargado={handleDPLCargado}
       />
     </div>
   );
