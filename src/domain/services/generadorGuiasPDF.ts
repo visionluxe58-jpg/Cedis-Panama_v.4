@@ -737,3 +737,6 @@ export function descargarComprobanteSalidaFisica(d: DespachoRegistro): void {
   doc.save(`COMPROBANTE_SALIDA_${d.numeroGuia}.pdf`);
 }
 
+/** Alias para compatibilidad de importación */
+export const descargarGuiaDespacho = descargarComprobanteSalidaFisica;
+
