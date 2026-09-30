@@ -317,3 +317,40 @@ export interface EncargadoSucursal {
   direccion?: string;
 }
 
+// ========== HISTORIAL Y TRAZABILIDAD DE PEDIDOS PARA ASESORES ==========
+export interface LineaHistorialAsesor {
+  lineaId: string;
+  codigoRepuesto: string;
+  descripcionOficial: string;
+  cantidadSolicitada: number;
+  cantidadAsignada: number;
+  cantidadDespachada: number;
+  cantidadFaltante: number;
+  estatusLinea: string;
+  contenedorAsignado?: string;
+  palletAsignado?: string;
+  ubicacionCedis?: string;
+}
+
+export interface PedidoHistorialAsesor {
+  pedidoId: string;
+  fechaCreacion: string;
+  sucursal: string;
+  colaborador: string;
+  cliente: string;
+  modeloChangan: string;
+  vin: string;
+  numeroOR: string;
+  tipoPedido: string;
+  observaciones?: string;
+  totalItems: number;
+  cantidadSolicitadaTotal: number;
+  cantidadAsignadaTotal: number;
+  cantidadDespachadaTotal: number;
+  cantidadFaltanteTotal: number;
+  porcentajeEficiencia: number;
+  estatusGeneral: 'PENDIENTE' | 'PARCIAL' | 'COMPLETADO' | 'DESPACHADO';
+  lineas: LineaHistorialAsesor[];
+}
+
+

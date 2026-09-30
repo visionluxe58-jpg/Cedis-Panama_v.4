@@ -10,6 +10,8 @@ import type {
   DPLDetalle,
   DespachoRegistro,
   EncargadoSucursal,
+  PedidoHistorialAsesor,
+  LineaHistorialAsesor,
 } from '../../domain/models/types';
 
 // Sanitiza la URL de Supabase eliminando /rest/v1, /storage/v1 o barras finales añadidas por error en Vercel
@@ -1628,6 +1630,151 @@ export async function obtenerEncargadosSupabase(): Promise<EncargadoSucursal[]> 
   } catch (err) {
     console.error('Error obteniendo encargados de Supabase:', err);
     return DIRECTORIO_ENCARGADOS_OFICIAL;
+  }
+}
+
+/**
+ * Obtiene el historial completo de pedidos para la sucursal / asesor,
+ * agrupando repuestos por pedido y calculando cantidades asignadas, faltantes
+ * y el porcentaje de eficiencia (Fill Rate) en tiempo real coordinado con CEDIS.
+ */
+export async function obtenerHistorialAsesorSupabase(
+  sucursal?: string,
+  colaborador?: string
+): Promise<PedidoHistorialAsesor[]> {
+  try {
+    const todasLasFilas = await obtenerFilasAdminSupabase();
+
+    // Normalizar términos para comparación flexible
+    const normSucursal = sucursal ? normStr(sucursal) : '';
+    const normColab = colaborador ? normStr(colaborador) : '';
+
+    // Filtrar filas correspondientes a la sucursal o al asesor
+    const filasFiltradas = todasLasFilas.filter(f => {
+      const fSuc = normStr(f.sucursal);
+      const fCol = normStr(f.colaborador);
+
+      if (normSucursal && fSuc) {
+        if (fSuc === normSucursal || fSuc.includes(normSucursal) || normSucursal.includes(fSuc)) {
+          return true;
+        }
+      }
+
+      if (normColab && fCol) {
+        if (fCol === normColab || fCol.includes(normColab) || normColab.includes(fCol)) {
+          return true;
+        }
+      }
+
+      return !normSucursal && !normColab;
+    });
+
+    // Agrupar filas por pedidoId
+    const pedidosMap = new Map<string, PedidoHistorialAsesor>();
+
+    filasFiltradas.forEach(fila => {
+      const pedId = fila.pedidoId.trim().toUpperCase();
+      if (!pedId) return;
+
+      const cantSol = Number(fila.cantidadSolicitada) || 1;
+      const cantAsig = Number(fila.cantidadAsignada) || 0;
+      const cantDesp = Number(fila.cantidadDespachada) || 0;
+      const listas = Math.max(cantAsig, cantDesp);
+      const faltante = Math.max(0, cantSol - listas);
+
+      const linea: LineaHistorialAsesor = {
+        lineaId: fila.lineaId,
+        codigoRepuesto: fila.codigoRepuesto,
+        descripcionOficial: fila.descripcionOficial,
+        cantidadSolicitada: cantSol,
+        cantidadAsignada: cantAsig,
+        cantidadDespachada: cantDesp,
+        cantidadFaltante: faltante,
+        estatusLinea: fila.estatusLinea,
+        contenedorAsignado: fila.contenedorAsignado,
+        palletAsignado: fila.palletAsignado,
+        ubicacionCedis: fila.ubicacionCedis,
+      };
+
+      if (!pedidosMap.has(pedId)) {
+        pedidosMap.set(pedId, {
+          pedidoId: fila.pedidoId,
+          fechaCreacion: fila.fechaCreacion || '',
+          sucursal: fila.sucursal || sucursal || 'Villa Lucre',
+          colaborador: fila.colaborador || colaborador || 'Asesor',
+          cliente: fila.cliente || 'Consumidor Final',
+          modeloChangan: fila.modeloChangan || 'Changan',
+          vin: fila.vin || '',
+          numeroOR: fila.numeroOR || '',
+          tipoPedido: fila.tipoPedido || 'Taller Mecánico',
+          totalItems: 1,
+          cantidadSolicitadaTotal: cantSol,
+          cantidadAsignadaTotal: cantAsig,
+          cantidadDespachadaTotal: cantDesp,
+          cantidadFaltanteTotal: faltante,
+          porcentajeEficiencia: cantSol > 0 ? Math.min(100, Math.round((listas / cantSol) * 100)) : 0,
+          estatusGeneral: 'PENDIENTE',
+          lineas: [linea],
+        });
+      } else {
+        const ped = pedidosMap.get(pedId)!;
+        ped.lineas.push(linea);
+        ped.totalItems = ped.lineas.length;
+        ped.cantidadSolicitadaTotal += cantSol;
+        ped.cantidadAsignadaTotal += cantAsig;
+        ped.cantidadDespachadaTotal += cantDesp;
+
+        const totalListas = ped.lineas.reduce((acc, l) => acc + Math.max(l.cantidadAsignada, l.cantidadDespachada), 0);
+        ped.cantidadFaltanteTotal = Math.max(0, ped.cantidadSolicitadaTotal - totalListas);
+        ped.porcentajeEficiencia = ped.cantidadSolicitadaTotal > 0
+          ? Math.min(100, Math.round((totalListas / ped.cantidadSolicitadaTotal) * 100))
+          : 0;
+
+        if ((!ped.cliente || ped.cliente === 'Consumidor Final') && fila.cliente && fila.cliente !== 'Consumidor Final') {
+          ped.cliente = fila.cliente;
+        }
+        if (!ped.vin && fila.vin) ped.vin = fila.vin;
+        if (!ped.numeroOR && fila.numeroOR) ped.numeroOR = fila.numeroOR;
+      }
+    });
+
+    // Calcular estatus general de cada pedido
+    const pedidos = Array.from(pedidosMap.values()).map(ped => {
+      const totalSol = ped.cantidadSolicitadaTotal;
+      const totalDesp = ped.cantidadDespachadaTotal;
+      const totalAsig = ped.cantidadAsignadaTotal;
+      const totalListas = Math.max(totalAsig, totalDesp);
+
+      let estatusGeneral: 'PENDIENTE' | 'PARCIAL' | 'COMPLETADO' | 'DESPACHADO' = 'PENDIENTE';
+
+      if (totalDesp > 0 && totalDesp >= totalSol) {
+        estatusGeneral = 'DESPACHADO';
+      } else if (totalListas >= totalSol) {
+        estatusGeneral = 'COMPLETADO';
+      } else if (totalListas > 0 || ped.lineas.some(l => l.estatusLinea.toUpperCase().includes('ASIGN') || l.contenedorAsignado)) {
+        estatusGeneral = 'PARCIAL';
+      } else {
+        estatusGeneral = 'PENDIENTE';
+      }
+
+      return {
+        ...ped,
+        estatusGeneral,
+      };
+    });
+
+    // Ordenar de más reciente a más antiguo
+    pedidos.sort((a, b) => {
+      const numA = parseInt((a.pedidoId.match(/\d+$/) || ['0'])[0], 10);
+      const numB = parseInt((b.pedidoId.match(/\d+$/) || ['0'])[0], 10);
+      if (numA && numB && numA !== numB) return numB - numA;
+      return b.pedidoId.localeCompare(a.pedidoId);
+    });
+
+    return pedidos;
+  } catch (err) {
+    console.error('Error obteniendo historial de asesor:', err);
+    return [];
   }
 }
 

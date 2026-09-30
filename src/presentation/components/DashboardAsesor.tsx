@@ -3,12 +3,17 @@
  */
 
 import { useState, useEffect } from 'react';
-import type { AuthState, LineaPedido, ClasificacionRepuesto } from '../../domain/models/types';
+import type { AuthState, LineaPedido, ClasificacionRepuesto, PedidoHistorialAsesor } from '../../domain/models/types';
 import { nuevoFolio, transmitirPedido } from '../../data/api/client';
 import { clasificarRepuesto } from '../../domain/services';
 import { IAReconocimientoRepuestos, type RepuestoChangan } from '../../domain/services/iaReconocimientoRepuestos';
 import { SmartSAPPdfExtractorModal } from './SmartSAPPdfExtractorModal';
-import { generarPDFPedido } from '../../infrastructure/pdf/pdfGenerator';
+import { generarPDFPedido, type DatosPedidoPDF } from '../../infrastructure/pdf/pdfGenerator';
+import {
+  obtenerHistorialAsesorSupabase,
+  suscribirCambiosPedidosSupabase,
+  isSupabaseConfigured,
+} from '../../data/api/supabaseClient';
 
 interface DashboardAsesorProps {
   auth: AuthState;
@@ -19,12 +24,21 @@ const MODELOS_CHANGAN = ['CS15', 'CS35 Plus', 'CS55 Plus', 'CS75 Plus', 'CS95', 
 const CANALES = ['Mostrador', 'Taller', 'Chapistería', 'Bodega', 'Garantía', 'Interno'];
 
 export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
-  const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success'>('main');
+  const [view, setView] = useState<'main' | 'newOrder' | 'confirm' | 'transmitting' | 'success' | 'historial'>('main');
   const [numeroPedido, setNumeroPedido] = useState('');
   const [pedidoLoading, setPedidoLoading] = useState(false);
   const [modalExtractorAbierto, setModalExtractorAbierto] = useState(false);
   const [pasoActual, setPasoActual] = useState(1);
   const [mensajeAlerta, setMensajeAlerta] = useState<{ tipo: 'success' | 'error' | 'info' | 'warning'; texto: string } | null>(null);
+
+  // Estados para la sección Historial y Eficiencia
+  const [historialPedidos, setHistorialPedidos] = useState<PedidoHistorialAsesor[]>([]);
+  const [historialCargando, setHistorialCargando] = useState<boolean>(false);
+  const [busquedaHistorial, setBusquedaHistorial] = useState<string>('');
+  const [filtroEstatusHistorial, setFiltroEstatusHistorial] = useState<string>('TODOS');
+  const [pedidoExpandidoId, setPedidoExpandidoId] = useState<string | null>(null);
+  const [ultimoSyncHistorial, setUltimoSyncHistorial] = useState<string>('');
+  const [isLiveHistorial, setIsLiveHistorial] = useState<boolean>(isSupabaseConfigured());
   
   // Datos del pedido
   const [canal, setCanal] = useState('');
@@ -74,6 +88,62 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
       }, 500);
     }
   }, [view]);
+
+  // Carga de historial en tiempo real coordinada con Supabase y el panel de Admin
+  const cargarHistorial = async () => {
+    setHistorialCargando(true);
+    try {
+      const data = await obtenerHistorialAsesorSupabase(auth.sucursal, auth.nombre);
+      setHistorialPedidos(data);
+      setUltimoSyncHistorial(new Date().toLocaleTimeString('es-PA'));
+      setIsLiveHistorial(isSupabaseConfigured());
+    } catch (err) {
+      console.error('Error cargando historial de pedidos:', err);
+    } finally {
+      setHistorialCargando(false);
+    }
+  };
+
+  useEffect(() => {
+    cargarHistorial();
+
+    // Suscripción reactiva: cualquier asignación o despacho en Admin actualiza al Asesor en vivo
+    const desuscribir = suscribirCambiosPedidosSupabase(() => {
+      cargarHistorial();
+    });
+
+    return () => {
+      desuscribir();
+    };
+  }, [auth.sucursal, auth.nombre]);
+
+  const handleDescargarPDFHistorial = (ped: PedidoHistorialAsesor) => {
+    try {
+      const datosPDF: DatosPedidoPDF = {
+        numeroPedido: ped.pedidoId,
+        canal: ped.tipoPedido || 'Taller Mecánico',
+        sucursal: ped.sucursal || auth.sucursal || '',
+        colaborador: ped.colaborador || auth.nombre,
+        cliente: ped.cliente,
+        modelo: ped.modeloChangan,
+        vin: ped.vin,
+        placa: '',
+        noCotizacion: ped.numeroOR,
+        observaciones: ped.observaciones || '',
+        lineas: ped.lineas.map(l => ({
+          codigoRepuesto: l.codigoRepuesto,
+          descripcion: l.descripcionOficial,
+          cantidad: l.cantidadSolicitada,
+          motivo: l.estatusLinea,
+        })),
+        timestamp: ped.fechaCreacion || new Date().toISOString(),
+      };
+      generarPDFPedido(datosPDF);
+    } catch (err) {
+      console.error('Error descargando PDF:', err);
+      alert('No se pudo generar el PDF del pedido.');
+    }
+  };
 
   const generarNumeroPedido = async () => {
     setPedidoLoading(true);
@@ -437,17 +507,30 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 </div>
               </button>
 
-              <div className="glass-card rounded-2xl p-6 border-2 border-dashed border-gray-200">
+              <button
+                onClick={() => {
+                  cargarHistorial();
+                  setView('historial');
+                }}
+                className="glass-card rounded-2xl p-6 text-left hover:shadow-lg transition-all group cursor-pointer border-2 border-transparent hover:border-emerald-400/40"
+              >
                 <div className="flex items-start gap-4">
-                  <div className="w-14 h-14 bg-gray-100 rounded-xl flex items-center justify-center">
-                    <i className="fas fa-history text-gray-400 text-xl"></i>
+                  <div className="w-14 h-14 bg-gradient-to-br from-emerald-500 to-teal-700 rounded-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
+                    <i className="fas fa-history text-white text-xl"></i>
                   </div>
                   <div>
-                    <h3 className="text-lg font-bold text-gray-400">Historial</h3>
-                    <p className="text-sm text-gray-400 mt-1">Próximamente</p>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-bold text-changan-blue">Historial y Eficiencia</h3>
+                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full">
+                        En vivo
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Seguimiento, repuestos faltantes y % de cumplimiento
+                    </p>
                   </div>
                 </div>
-              </div>
+              </button>
             </div>
           </div>
         )}
@@ -986,6 +1069,417 @@ export function DashboardAsesor({ auth, onLogout }: DashboardAsesorProps) {
                 <i className="fas fa-plus mr-2"></i>Crear Nuevo Pedido
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Vista de Historial y Eficiencia para Asesores */}
+        {view === 'historial' && (
+          <div className="fade-in space-y-6">
+            {/* Encabezado y Navegación */}
+            <div className="glass-card rounded-2xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 border border-slate-200 shadow-sm">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setView('main')}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-xs"
+                  title="Volver al menú principal"
+                >
+                  <i className="fas fa-arrow-left"></i>
+                  <span>Volver</span>
+                </button>
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <h2 className="text-xl font-bold text-changan-blue">Historial y Eficiencia de Pedidos</h2>
+                    {isLiveHistorial && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        CEDIS en Vivo
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Sucursal: <span className="font-semibold text-slate-700">{auth.sucursal}</span> • Actualización automática en tiempo real
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={cargarHistorial}
+                  disabled={historialCargando}
+                  className="px-3.5 py-2 bg-changan-blue/10 hover:bg-changan-blue/20 text-changan-blue rounded-xl text-xs font-bold transition-all flex items-center gap-2 border border-changan-blue/20 disabled:opacity-50"
+                  title="Sincronizar pedidos ahora"
+                >
+                  <i className={`fas fa-sync-alt ${historialCargando ? 'animate-spin text-changan-accent' : ''}`}></i>
+                  <span>{historialCargando ? 'Sincronizando...' : 'Sincronizar'}</span>
+                </button>
+                {ultimoSyncHistorial && (
+                  <span className="text-[11px] text-slate-400 hidden sm:inline">
+                    Último sync: {ultimoSyncHistorial}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Tarjetas KPI de Resumen del Asesor */}
+            {(() => {
+              const totalPeds = historialPedidos.length;
+              const totalPiezasSol = historialPedidos.reduce((s, p) => s + p.cantidadSolicitadaTotal, 0);
+              const totalPiezasListas = historialPedidos.reduce((s, p) => s + Math.max(p.cantidadAsignadaTotal, p.cantidadDespachadaTotal), 0);
+              const totalPiezasFalt = historialPedidos.reduce((s, p) => s + p.cantidadFaltanteTotal, 0);
+              const fillRateGlobal = totalPiezasSol > 0 ? Math.round((totalPiezasListas / totalPiezasSol) * 100) : 0;
+
+              return (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {/* Total Pedidos */}
+                  <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pedidos</span>
+                      <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-sm">
+                        <i className="fas fa-boxes-stacked"></i>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-black text-slate-800">{totalPeds}</div>
+                    <p className="text-[11px] text-slate-500 mt-1">Registrados en la sucursal</p>
+                  </div>
+
+                  {/* Eficiencia Global */}
+                  <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Eficiencia Global</span>
+                      <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center text-sm">
+                        <i className="fas fa-chart-pie"></i>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-black text-emerald-700">{fillRateGlobal}%</div>
+                    <p className="text-[11px] text-slate-500 mt-1">Fill Rate de cumplimiento</p>
+                  </div>
+
+                  {/* Repuestos Listos */}
+                  <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Listos / Asignados</span>
+                      <div className="w-8 h-8 rounded-lg bg-cyan-50 text-cyan-600 flex items-center justify-center text-sm">
+                        <i className="fas fa-check-circle"></i>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-black text-cyan-700">{totalPiezasListas} <span className="text-xs font-normal text-slate-500">unid.</span></div>
+                    <p className="text-[11px] text-slate-500 mt-1">En tránsito o en CEDIS</p>
+                  </div>
+
+                  {/* Repuestos Faltantes */}
+                  <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Faltantes</span>
+                      <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-sm">
+                        <i className="fas fa-clock"></i>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-black text-amber-700">{totalPiezasFalt} <span className="text-xs font-normal text-slate-500">unid.</span></div>
+                    <p className="text-[11px] text-slate-500 mt-1">Pendientes por despachar</p>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Barra de Búsqueda y Filtros de Estatus */}
+            <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+              {/* Buscador */}
+              <div className="relative flex-1">
+                <i className="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                <input
+                  type="text"
+                  value={busquedaHistorial}
+                  onChange={(e) => setBusquedaHistorial(e.target.value)}
+                  placeholder="Buscar por Pedido N°, Cliente, Código de repuesto, OR o VIN..."
+                  className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs md:text-sm focus:outline-hidden focus:ring-2 focus:ring-changan-blue/30 focus:border-changan-blue transition-all"
+                />
+                {busquedaHistorial && (
+                  <button
+                    onClick={() => setBusquedaHistorial('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
+                  >
+                    <i className="fas fa-times"></i>
+                  </button>
+                )}
+              </div>
+
+              {/* Botones de Filtro por Estatus */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
+                {[
+                  { id: 'TODOS', label: 'Todos' },
+                  { id: 'PENDIENTES', label: 'Pendientes' },
+                  { id: 'PARCIALES', label: 'Parciales' },
+                  { id: 'COMPLETADOS', label: 'Completos' },
+                  { id: 'DESPACHADOS', label: 'Despachados' },
+                ].map(f => (
+                  <button
+                    key={f.id}
+                    onClick={() => setFiltroEstatusHistorial(f.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
+                      filtroEstatusHistorial === f.id
+                        ? 'bg-changan-blue text-white shadow-xs'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Listado de Pedidos con Eficiencia y Acordeón */}
+            {(() => {
+              const filtrados = historialPedidos.filter(ped => {
+                if (busquedaHistorial.trim()) {
+                  const q = busquedaHistorial.toLowerCase();
+                  const coincide =
+                    ped.pedidoId.toLowerCase().includes(q) ||
+                    ped.cliente.toLowerCase().includes(q) ||
+                    ped.numeroOR.toLowerCase().includes(q) ||
+                    ped.vin.toLowerCase().includes(q) ||
+                    ped.modeloChangan.toLowerCase().includes(q) ||
+                    ped.lineas.some(l => l.codigoRepuesto.toLowerCase().includes(q) || l.descripcionOficial.toLowerCase().includes(q));
+                  if (!coincide) return false;
+                }
+
+                if (filtroEstatusHistorial === 'PENDIENTES') return ped.estatusGeneral === 'PENDIENTE';
+                if (filtroEstatusHistorial === 'PARCIALES') return ped.estatusGeneral === 'PARCIAL';
+                if (filtroEstatusHistorial === 'COMPLETADOS') return ped.estatusGeneral === 'COMPLETADO';
+                if (filtroEstatusHistorial === 'DESPACHADOS') return ped.estatusGeneral === 'DESPACHADO';
+
+                return true;
+              });
+
+              if (historialCargando && filtrados.length === 0) {
+                return (
+                  <div className="bg-white rounded-2xl p-12 text-center border border-slate-200 shadow-xs">
+                    <i className="fas fa-spinner fa-spin text-3xl text-changan-blue mb-3"></i>
+                    <p className="text-sm font-semibold text-slate-700">Cargando historial de pedidos desde CEDIS...</p>
+                  </div>
+                );
+              }
+
+              if (filtrados.length === 0) {
+                return (
+                  <div className="bg-white rounded-2xl p-12 text-center border border-slate-200 shadow-xs">
+                    <div className="w-16 h-16 mx-auto mb-3 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 text-2xl">
+                      <i className="fas fa-inbox"></i>
+                    </div>
+                    <h3 className="text-base font-bold text-slate-800">No se encontraron pedidos</h3>
+                    <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                      {busquedaHistorial || filtroEstatusHistorial !== 'TODOS'
+                        ? 'No hay pedidos que coincidan con los filtros seleccionados.'
+                        : 'Aún no se han registrado pedidos en esta sucursal. Crea uno con el botón "Nuevo Pedido".'}
+                    </p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="space-y-4">
+                  {filtrados.map(ped => {
+                    const expandido = pedidoExpandidoId === ped.pedidoId;
+                    const piezasListas = Math.max(ped.cantidadAsignadaTotal, ped.cantidadDespachadaTotal);
+                    const pct = ped.porcentajeEficiencia;
+
+                    // Color de la barra de eficiencia
+                    const colorBarra =
+                      pct >= 80 ? 'bg-emerald-500' :
+                      pct >= 40 ? 'bg-amber-500' :
+                      'bg-blue-600';
+
+                    // Color del badge de estatus general
+                    const badgeEstatus =
+                      ped.estatusGeneral === 'DESPACHADO' ? { bg: 'bg-green-100 text-green-800 border-green-200', icon: 'fa-truck-fast', text: 'Despachado a Sucursal' } :
+                      ped.estatusGeneral === 'COMPLETADO' ? { bg: 'bg-emerald-100 text-emerald-800 border-emerald-200', icon: 'fa-check-double', text: '100% Listo en CEDIS' } :
+                      ped.estatusGeneral === 'PARCIAL' ? { bg: 'bg-amber-100 text-amber-800 border-amber-200', icon: 'fa-box-open', text: `Parcial (${pct}%)` } :
+                      { bg: 'bg-slate-100 text-slate-700 border-slate-200', icon: 'fa-clock', text: 'Pendiente en Tránsito' };
+
+                    return (
+                      <div
+                        key={ped.pedidoId}
+                        className="bg-white rounded-2xl border border-slate-200 shadow-xs hover:shadow-md transition-all overflow-hidden"
+                      >
+                        {/* Cabecera del Pedido */}
+                        <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-50/70 to-white border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <span className="font-mono font-bold text-sm sm:text-base text-changan-blue px-3 py-1 bg-blue-50 border border-blue-200/80 rounded-lg">
+                              {ped.pedidoId}
+                            </span>
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${badgeEstatus.bg}`}>
+                              <i className={`fas ${badgeEstatus.icon}`}></i>
+                              {badgeEstatus.text}
+                            </span>
+                            {ped.numeroOR && (
+                              <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-md">
+                                OR: {ped.numeroOR}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 text-xs text-slate-500">
+                            <i className="far fa-calendar-alt text-slate-400"></i>
+                            <span>{ped.fechaCreacion ? new Date(ped.fechaCreacion).toLocaleDateString('es-PA') : 'Fecha reciente'}</span>
+                          </div>
+                        </div>
+
+                        {/* Cuerpo: Información y Barra de Eficiencia */}
+                        <div className="p-4 sm:p-5 space-y-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+                            <div>
+                              <span className="text-slate-400 block font-medium">Cliente:</span>
+                              <span className="font-bold text-slate-800 text-sm">{ped.cliente}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block font-medium">Vehículo Changan:</span>
+                              <span className="font-semibold text-slate-700">{ped.modeloChangan}</span>
+                              {ped.vin && <span className="block font-mono text-[11px] text-slate-500">VIN: {ped.vin}</span>}
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block font-medium">Canal / Asesor:</span>
+                              <span className="font-semibold text-slate-700">{ped.tipoPedido} • {ped.colaborador}</span>
+                            </div>
+                          </div>
+
+                          {/* Medidor Visual de Eficiencia (% Fill Rate) */}
+                          <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200/70">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 mb-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">
+                                  Eficiencia del Pedido:
+                                </span>
+                                <span className={`text-sm font-black px-2 py-0.5 rounded-md text-white ${colorBarra}`}>
+                                  {pct}%
+                                </span>
+                              </div>
+                              <span className="text-xs text-slate-600 font-medium">
+                                <strong className="text-slate-900">{piezasListas}</strong> de <strong>{ped.cantidadSolicitadaTotal}</strong> repuestos listos
+                                {ped.cantidadFaltanteTotal > 0 ? (
+                                  <span className="text-amber-700 font-semibold ml-1.5">
+                                    ({ped.cantidadFaltanteTotal} {ped.cantidadFaltanteTotal === 1 ? 'faltante' : 'faltantes'} por llegar de CEDIS)
+                                  </span>
+                                ) : (
+                                  <span className="text-emerald-700 font-semibold ml-1.5">
+                                    (¡Pedido completo!)
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+
+                            {/* Barra de progreso */}
+                            <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden shadow-inner">
+                              <div
+                                className={`h-full transition-all duration-500 ${colorBarra}`}
+                                style={{ width: `${pct}%` }}
+                              ></div>
+                            </div>
+                          </div>
+
+                          {/* Botones de Acción */}
+                          <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2">
+                            <button
+                              onClick={() => setPedidoExpandidoId(expandido ? null : ped.pedidoId)}
+                              className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-2"
+                            >
+                              <i className={`fas ${expandido ? 'fa-chevron-up' : 'fa-chevron-down'}`}></i>
+                              <span>{expandido ? 'Ocultar Repuestos' : `Ver Detalle de Piezas (${ped.lineas.length})`}</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleDescargarPDFHistorial(ped)}
+                              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs flex items-center gap-2"
+                              title="Descargar comprobante en PDF oficial"
+                            >
+                              <i className="fas fa-file-pdf"></i>
+                              <span>Descargar PDF Original</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Acordeón de Detalle de Repuestos */}
+                        {expandido && (
+                          <div className="bg-slate-50/70 border-t border-slate-200 p-4 sm:p-5">
+                            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+                              <i className="fas fa-list-check text-changan-blue"></i>
+                              <span>Desglose de Repuestos del Pedido</span>
+                            </h4>
+
+                            <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                              <table className="w-full text-left text-xs">
+                                <thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
+                                  <tr>
+                                    <th className="py-2.5 px-3">Código OEM</th>
+                                    <th className="py-2.5 px-3">Descripción Oficial</th>
+                                    <th className="py-2.5 px-3 text-center">Pedida</th>
+                                    <th className="py-2.5 px-3 text-center">Lista / Asignada</th>
+                                    <th className="py-2.5 px-3 text-center">Faltante</th>
+                                    <th className="py-2.5 px-3">Estatus & Trazabilidad CEDIS</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {ped.lineas.map((linea, lIdx) => {
+                                    const esLista = linea.cantidadAsignada > 0 || linea.cantidadDespachada > 0;
+                                    return (
+                                      <tr key={linea.lineaId || lIdx} className="hover:bg-slate-50/80">
+                                        <td className="py-2.5 px-3 font-mono font-bold text-changan-blue whitespace-nowrap">
+                                          {linea.codigoRepuesto || '—'}
+                                        </td>
+                                        <td className="py-2.5 px-3 font-medium text-slate-700">
+                                          {linea.descripcionOficial || 'Repuesto sin descripción'}
+                                        </td>
+                                        <td className="py-2.5 px-3 text-center font-bold text-slate-800">
+                                          {linea.cantidadSolicitada}
+                                        </td>
+                                        <td className="py-2.5 px-3 text-center">
+                                          <span className={`inline-block px-2 py-0.5 rounded-md font-bold ${
+                                            esLista ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'
+                                          }`}>
+                                            {Math.max(linea.cantidadAsignada, linea.cantidadDespachada)}
+                                          </span>
+                                        </td>
+                                        <td className="py-2.5 px-3 text-center">
+                                          {linea.cantidadFaltante > 0 ? (
+                                            <span className="inline-block px-2 py-0.5 rounded-md font-bold bg-amber-100 text-amber-800">
+                                              {linea.cantidadFaltante}
+                                            </span>
+                                          ) : (
+                                            <span className="text-emerald-600 font-bold">
+                                              <i className="fas fa-check"></i>
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td className="py-2.5 px-3 whitespace-nowrap">
+                                          <div className="flex flex-col gap-0.5">
+                                            <span className="font-semibold text-slate-700">
+                                              {linea.estatusLinea || 'Pendiente'}
+                                            </span>
+                                            {(linea.contenedorAsignado || linea.palletAsignado) && (
+                                              <span className="text-[10px] text-slate-500 font-mono">
+                                                {linea.palletAsignado && `Pallet: ${linea.palletAsignado}`}
+                                                {linea.contenedorAsignado && ` • Cont: ${linea.contenedorAsignado}`}
+                                              </span>
+                                            )}
+                                            {linea.ubicacionCedis && (
+                                              <span className="text-[10px] text-blue-600 font-medium">
+                                                Rack CEDIS: {linea.ubicacionCedis}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         )}
       </main>
