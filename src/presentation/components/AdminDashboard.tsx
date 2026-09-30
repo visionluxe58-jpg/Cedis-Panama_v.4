@@ -282,12 +282,15 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         detalles.push(`🛡️ Se eliminaron ${resDup.eliminadosCount} registros duplicados en Supabase.`);
       }
       if (resDesp.migradosCount > 0) {
-        detalles.push(`📦 Se organizaron ${resDesp.migradosCount} repuestos despachados en Entregas de Bodega y Traslados.`);
+        detalles.push(`📦 Se sincronizaron ${resDesp.migradosCount} repuestos como Despachados (incluyendo entregas registradas).`);
+        if (resDesp.detalles && resDesp.detalles.length > 0) {
+          detalles.push(`   • ${resDesp.detalles.slice(0, 3).join(', ')}${resDesp.detalles.length > 3 ? '...' : ''}`);
+        }
       }
       if (detalles.length > 0) {
         mensaje += `\n\n${detalles.join('\n')}`;
       } else {
-        mensaje += ' La base de datos no contiene registros duplicados.';
+        mensaje += ' Toda la data de pedidos y despachos ya se encuentra al día y sin duplicados.';
       }
       notificar(mensaje);
     } catch (err) {
@@ -357,6 +360,58 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     } catch (err) {
       console.error('Error eliminando pedidos en lote:', err);
       notificar('Error al eliminar pedidos seleccionados.');
+    }
+  };
+
+  // Marcar seleccionados como Despachados / Entregados de Bodega
+  const handleMarcarDespachadosLote = async () => {
+    if (selectedLineas.size === 0) return;
+
+    const count = selectedLineas.size;
+    const numTrasladoSugerido = `TRA-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${Math.floor(Math.random() * 900 + 100)}`;
+    const confirmacion = window.confirm(
+      `¿Desea marcar como DESPACHADOS ${count} repuestos seleccionados?\n\n` +
+      `Se actualizarán en Supabase a "Despachado", desaparecerán de la matriz de pedidos activos y se registrarán en "Entregas de Bodega y Traslados" con el Traslado: ${numTrasladoSugerido}.`
+    );
+    if (!confirmacion) return;
+
+    try {
+      const seleccionados = filas.filter(f => selectedLineas.has(f.lineaId));
+      for (const linea of seleccionados) {
+        await actualizarEstatusPedidoSupabase(linea.lineaId, 'Despachado', {
+          cantidadDespachada: linea.cantidadSolicitada,
+        });
+
+        const nuevoDespacho: Omit<DespachoRegistro, 'id'> = {
+          numeroGuia: numTrasladoSugerido,
+          pedidoId: linea.pedidoId,
+          sucursalDestino: linea.sucursal,
+          transportista: `Entregado Bodega | Recibe: ${linea.colaborador || 'Personal Sucursal'}`,
+          placaVehiculo: 'TRASLADO BODEGA',
+          despachadorCedis: auth.nombre || 'Bodega Central CEDIS',
+          fechaDespacho: new Date().toISOString().slice(0, 10),
+          totalPiezas: Number(linea.cantidadSolicitada) || 1,
+          totalLineas: 1,
+          estadoEntrega: 'ENTREGADO',
+          observaciones: `Despacho manual en lote - Cliente: ${linea.cliente || 'Taller'} - Repuesto: ${linea.codigoRepuesto}`,
+          lineasJson: JSON.stringify([linea]),
+        };
+        await guardarDespachoSupabase(nuevoDespacho);
+      }
+
+      setFilas(prev =>
+        prev.map(f =>
+          selectedLineas.has(f.lineaId)
+            ? { ...f, estatusLinea: 'Despachado', cantidadDespachada: f.cantidadSolicitada }
+            : f
+        )
+      );
+      setSelectedLineas(new Set());
+      await cargarDatos(false);
+      notificar(`¡${count} pedidos marcados como Despachados con éxito bajo el Traslado ${numTrasladoSugerido}!`);
+    } catch (err) {
+      console.error('Error al marcar despachos en lote:', err);
+      notificar('Error al procesar los despachos en lote.');
     }
   };
 
@@ -823,7 +878,14 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     return filas.filter(f => {
       const coincideSucursal = filtroSucursal === 'TODAS' || f.sucursal.toLowerCase() === filtroSucursal.toLowerCase();
       
-      const esDespachado = (f.estatusLinea || '').toLowerCase() === 'despachado';
+      const estLower = (f.estatusLinea || '').toLowerCase();
+      const esDespachado =
+        estLower === 'despachado' ||
+        estLower === 'entregado' ||
+        estLower.includes('despach') ||
+        estLower.includes('entreg') ||
+        (Number(f.cantidadDespachada) > 0 && Number(f.cantidadDespachada) >= Number(f.cantidadSolicitada));
+
       const coincideEstatus =
         filtroEstatus === 'ACTIVOS'
           ? !esDespachado
@@ -1328,6 +1390,15 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     </div>
 
                     <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={handleMarcarDespachadosLote}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                        title="Marcar repuestos seleccionados como Despachados/Entregados de Bodega y mover a Traslados"
+                      >
+                        <i className="fas fa-dolly text-emerald-200"></i>
+                        <span>Marcar Despachados ({selectedLineas.size})</span>
+                      </button>
+
                       <button
                         onClick={handleImprimirEtiquetasLote}
                         className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-700 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
