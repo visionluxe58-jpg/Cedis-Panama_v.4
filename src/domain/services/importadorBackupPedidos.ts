@@ -20,6 +20,8 @@ export interface ResultadoImportacionBackup {
   totalFilasArchivo: number;
   filasValidas: FilaBackupProcesada[];
   filasDescartadas: number;
+  duplicadosOmitidosCount: number;
+  duplicadosDetalle: string[];
   pedidosUnicosCount: number;
   sucursalesInvolucradas: string[];
   resumenPorSucursal: Record<string, number>;
@@ -158,6 +160,8 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
       totalFilasArchivo: 0,
       filasValidas: [],
       filasDescartadas: 0,
+      duplicadosOmitidosCount: 0,
+      duplicadosDetalle: [],
       pedidosUnicosCount: 0,
       sucursalesInvolucradas: [],
       resumenPorSucursal: {},
@@ -197,6 +201,11 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
 
   const filasValidas: FilaBackupProcesada[] = [];
   let filasDescartadas = 0;
+  let duplicadosOmitidosCount = 0;
+  const duplicadosDetalle: string[] = [];
+
+  // Mapa para prevenir duplicidad estricta de cliente con el mismo código en la misma orden
+  const mapaRepuestosVistos = new Map<string, FilaBackupProcesada>();
 
   // Mapa para contar líneas por pedido y asignar índices homogéneos
   const conteoLineasPorPedido = new Map<string, number>();
@@ -260,6 +269,32 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
       pedidoId = `PED-${prefixSuc}-${fechaNormalizada.replace(/-/g, '')}-${i}`;
     }
 
+    // PROTECCIÓN ESTRICTA CONTRA DUPLICIDAD:
+    // Comprobar si este cliente ya tiene este mismo código de repuesto en esta cotización/orden
+    const normalizarCadena = (s: string) => s.trim().toUpperCase().replace(/\s+/g, ' ');
+    const codNorm = normalizarCadena(rawCodigo);
+    const clienteNorm = normalizarCadena(rawCliente || 'CONSUMIDOR FINAL');
+    const refOrdenNorm = normalizarCadena(rawCotizacion || rawOT || rawPlaca || pedidoId);
+
+    const claveUnicaClienteRepuesto = `${clienteNorm}___${refOrdenNorm}___${codNorm}`;
+    const clavePedidoCodigo = `${pedidoId.trim().toUpperCase()}___${codNorm}`;
+
+    if (mapaRepuestosVistos.has(claveUnicaClienteRepuesto) || mapaRepuestosVistos.has(clavePedidoCodigo)) {
+      duplicadosOmitidosCount++;
+      const detalleDup = `${rawCliente || 'Cliente'} (Cotiz/OT: ${rawCotizacion || rawOT || 'S/N'}) - Código: ${rawCodigo}`;
+      duplicadosDetalle.push(detalleDup);
+
+      // Consolidar inteligentemente en la fila canónica existente sin duplicar la pieza
+      const filaExistente = mapaRepuestosVistos.get(claveUnicaClienteRepuesto) || mapaRepuestosVistos.get(clavePedidoCodigo)!;
+      if (rawDesc && (!filaExistente.descripcionOficial || rawDesc.length > filaExistente.descripcionOficial.length)) {
+        filaExistente.descripcionOficial = rawDesc;
+      }
+      if (cantNum > filaExistente.cantidadSolicitada) {
+        filaExistente.cantidadSolicitada = cantNum;
+      }
+      continue; // Evitar a toda costa duplicar la línea
+    }
+
     const indexEnPedido = (conteoLineasPorPedido.get(pedidoId) || 0) + 1;
     conteoLineasPorPedido.set(pedidoId, indexEnPedido);
 
@@ -280,7 +315,7 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
     // VIN / Placa
     const vinFinal = rawPlaca ? `PLACA: ${rawPlaca}` : 'POR VERIFICAR';
 
-    filasValidas.push({
+    const nuevaFila: FilaBackupProcesada = {
       lineaId,
       pedidoId,
       codigoRepuesto: rawCodigo,
@@ -305,7 +340,11 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
       placaOriginal: rawPlaca,
       esValida: true,
       advertencias: advertenciasFila,
-    });
+    };
+
+    filasValidas.push(nuevaFila);
+    mapaRepuestosVistos.set(claveUnicaClienteRepuesto, nuevaFila);
+    mapaRepuestosVistos.set(clavePedidoCodigo, nuevaFila);
   }
 
   // Estadísticas globales
@@ -319,10 +358,18 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
     setPedidos.add(f.pedidoId);
   });
 
+  if (duplicadosOmitidosCount > 0) {
+    advertenciasGlobales.push(
+      `🛡️ Protección anti-duplicados: Se detectaron y omitieron ${duplicadosOmitidosCount} filas repetidas con el mismo cliente y código.`
+    );
+  }
+
   return {
     totalFilasArchivo: matrizCruda.length - 1,
     filasValidas,
     filasDescartadas,
+    duplicadosOmitidosCount,
+    duplicadosDetalle,
     pedidosUnicosCount: setPedidos.size,
     sucursalesInvolucradas: Array.from(setSucursales),
     resumenPorSucursal,

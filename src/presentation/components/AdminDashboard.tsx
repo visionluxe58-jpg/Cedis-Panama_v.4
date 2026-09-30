@@ -30,6 +30,7 @@ import {
   obtenerEncargadosSupabase,
   eliminarPedidosSupabase,
   depurarYMigrarDespachadosSupabase,
+  depurarDuplicadosSupabase,
   aplicarMatchingFIFOSupabase,
 } from '../../data/api/supabaseClient';
 import {
@@ -225,46 +226,54 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     });
   };
 
-  // Analizar y Depurar Matriz: Detecta repuestos despachados y los organiza en Despachos
+  // Analizar y Depurar Matriz: Detecta y elimina duplicados y organiza repuestos despachados en Retiros
   const handleAnalizarYDepurar = async () => {
     const confirmar = window.confirm(
-      '¿Desea analizar toda la base de datos de pedidos?\n\n' +
+      '¿Desea auditar y depurar toda la base de datos de pedidos en Supabase?\n\n' +
       'Esta función:\n' +
-      '1. Analiza cada fila para detectar si ya fue despachada o entregada.\n' +
-      '2. Actualiza el estatus en Supabase y memoria local a "Despachado".\n' +
-      '3. Mueve y consolida automáticamente todos los despachos en la pestaña "Retiro en Mostrador CEDIS".\n' +
-      '4. Despeja la vista activa de "Gestión de Pedidos" para mostrar solo lo pendiente.'
+      '1. 🛡️ Detecta y elimina filas duplicadas o triplicadas del mismo cliente y código de repuesto.\n' +
+      '2. 📦 Analiza pedidos despachados o retirados y los organiza en "Retiro en Mostrador CEDIS".\n' +
+      '3. 🧹 Garantiza la consistencia exacta de inventario y pedidos pendientes.'
     );
     if (!confirmar) return;
 
     setDepurandoMatriz(true);
     try {
-      const res = await depurarYMigrarDespachadosSupabase(filas);
-      setFilas(prev =>
-        prev.map(f => {
-          const est = (f.estatusLinea || '').toUpperCase();
-          const esDesp =
-            est.includes('DESPACH') ||
-            est.includes('ENTREG') ||
-            est.includes('RETIR') ||
-            (f.cantidadDespachada > 0 && f.cantidadDespachada >= f.cantidadSolicitada);
-          if (esDesp) {
-            return {
-              ...f,
-              estatusLinea: 'Despachado',
-              cantidadDespachada: f.cantidadDespachada || f.cantidadSolicitada,
-            };
-          }
-          return f;
-        })
-      );
-      const despActualizados = await obtenerDespachosSupabase();
+      // 1. Purgar duplicados físicos en Supabase
+      const resDup = await depurarDuplicadosSupabase();
+
+      // 2. Depurar y migrar despachados
+      const resDesp = await depurarYMigrarDespachadosSupabase(filas);
+
+      // 3. Recargar datos limpios y sincronizados desde Supabase
+      const [filasSincronizadas, despActualizados] = await Promise.all([
+        obtenerFilasAdminSupabase(),
+        obtenerDespachosSupabase()
+      ]);
+
+      if (filasSincronizadas) {
+        setFilas(filasSincronizadas);
+      }
       if (despActualizados) {
         setDespachos(despActualizados);
       }
-      notificar(`¡Depuración completada! ${res.migradosCount} pedidos analizados y organizados en la sección de Despachos.`);
+
+      let mensaje = '¡Auditoría y depuración finalizada con éxito!';
+      const detalles: string[] = [];
+      if (resDup.eliminadosCount > 0) {
+        detalles.push(`🛡️ Se eliminaron ${resDup.eliminadosCount} registros duplicados en Supabase.`);
+      }
+      if (resDesp.migradosCount > 0) {
+        detalles.push(`📦 Se organizaron ${resDesp.migradosCount} repuestos despachados en Retiros.`);
+      }
+      if (detalles.length > 0) {
+        mensaje += `\n\n${detalles.join('\n')}`;
+      } else {
+        mensaje += ' La base de datos no contiene registros duplicados.';
+      }
+      notificar(mensaje);
     } catch (err) {
-      console.error('Error depurando pedidos despachados:', err);
+      console.error('Error durante la depuración de la matriz:', err);
       notificar('Error al procesar la depuración.');
     } finally {
       setDepurandoMatriz(false);

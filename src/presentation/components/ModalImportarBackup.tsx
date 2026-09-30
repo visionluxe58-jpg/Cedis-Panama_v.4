@@ -18,7 +18,8 @@ import {
   Building2,
   PackageCheck,
   Boxes,
-  ArrowRight
+  ArrowRight,
+  ShieldCheck
 } from 'lucide-react';
 import type { FilaRastreador } from '../../domain/models/types';
 import {
@@ -51,6 +52,8 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
   const [importandoASupabase, setImportandoASupabase] = useState(false);
   const [progresoImportacion, setProgresoImportacion] = useState(0);
   const [importacionFinalizada, setImportacionFinalizada] = useState(false);
+  const [resumenSupabase, setResumenSupabase] = useState<{ totalInsertadas: number; totalExistentesOmitidas: number; pedidosUnicos: number } | null>(null);
+  const [mostrarDetalleDuplicados, setMostrarDetalleDuplicados] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -131,6 +134,11 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
       });
 
       if (res.ok) {
+        setResumenSupabase({
+          totalInsertadas: res.totalInsertadas,
+          totalExistentesOmitidas: res.totalExistentesOmitidas,
+          pedidosUnicos: res.pedidosUnicos,
+        });
         setImportacionFinalizada(true);
         onImportacionExitosa(res.totalInsertadas, res.pedidosUnicos);
       } else {
@@ -149,6 +157,8 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
     setArchivoSeleccionado(null);
     setTextoPegado('');
     setImportacionFinalizada(false);
+    setResumenSupabase(null);
+    setMostrarDetalleDuplicados(false);
     onClose();
   };
 
@@ -190,23 +200,35 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
             </div>
             <h3 className="text-xl font-black text-white">¡Importación Exitosa a Supabase!</h3>
             <p className="text-sm text-slate-300 max-w-lg mx-auto">
-              Se han registrado <strong className="text-emerald-400">{resultadoParseo?.filasValidas.length} repuestos</strong> organizados en <strong className="text-cyan-300">{resultadoParseo?.pedidosUnicosCount} órdenes de pedido</strong> en la tabla oficial <code className="text-xs bg-slate-800 px-2 py-0.5 rounded">matriz_pedidos</code>.
+              Se han registrado <strong className="text-emerald-400">{resumenSupabase?.totalInsertadas ?? resultadoParseo?.filasValidas.length} repuestos nuevos</strong> organizados en <strong className="text-cyan-300">{resultadoParseo?.pedidosUnicosCount} órdenes de pedido</strong> en la tabla oficial <code className="text-xs bg-slate-800 px-2 py-0.5 rounded">matriz_pedidos</code>.
             </p>
 
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 max-w-md mx-auto text-xs text-slate-400 text-left space-y-1.5">
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 max-w-md mx-auto text-xs text-slate-400 text-left space-y-2">
               <div className="flex justify-between">
-                <span>Total de piezas registradas:</span>
-                <strong className="text-white">{resultadoParseo?.filasValidas.length} u.</strong>
+                <span>Piezas nuevas guardadas en Supabase:</span>
+                <strong className="text-emerald-400 font-mono">{resumenSupabase?.totalInsertadas ?? resultadoParseo?.filasValidas.length} u.</strong>
               </div>
+              {Number(resumenSupabase?.totalExistentesOmitidas) > 0 && (
+                <div className="flex justify-between text-amber-300 font-medium">
+                  <span>Piezas ya existentes (Prevenidas de duplicarse):</span>
+                  <strong className="font-mono">{resumenSupabase?.totalExistentesOmitidas} u.</strong>
+                </div>
+              )}
+              {Number(resultadoParseo?.duplicadosOmitidosCount) > 0 && (
+                <div className="flex justify-between text-purple-300 font-medium">
+                  <span>Duplicados en archivo consolidados:</span>
+                  <strong className="font-mono">{resultadoParseo?.duplicadosOmitidosCount} líneas</strong>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span>Pedidos agrupados:</span>
                 <strong className="text-cyan-400">{resultadoParseo?.pedidosUnicosCount} órdenes</strong>
               </div>
               <div className="flex justify-between">
                 <span>Sucursales impactadas:</span>
-                <strong className="text-amber-300">{resultadoParseo?.sucursalesInvolucradas.join(', ')}</strong>
+                <strong className="text-slate-200">{resultadoParseo?.sucursalesInvolucradas.join(', ')}</strong>
               </div>
-              <div className="flex justify-between border-t border-slate-800 pt-1 text-emerald-300 font-semibold">
+              <div className="flex justify-between border-t border-slate-800 pt-1.5 text-emerald-300 font-semibold">
                 <span>Estatus inicial:</span>
                 <span>Pendiente (Listos para Matching FIFO)</span>
               </div>
@@ -327,7 +349,7 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
             {resultadoParseo && (
               <div className="space-y-3 pt-2">
                 {/* Métricas del Archivo */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                   <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
                     <p className="text-[10px] text-slate-400 uppercase font-bold">Total Repuestos</p>
                     <p className="text-xl font-black text-emerald-400 mt-0.5">
@@ -342,20 +364,62 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
                     </p>
                   </div>
 
-                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                    <p className="text-[10px] text-slate-400 uppercase font-bold">Filas Descartadas</p>
-                    <p className="text-xl font-black text-amber-400 mt-0.5">
-                      {resultadoParseo.filasDescartadas} <span className="text-xs font-normal text-slate-400">vacías/inválidas</span>
+                  <div className="bg-slate-950 border border-purple-500/30 rounded-xl p-3">
+                    <p className="text-[10px] text-purple-300 uppercase font-bold flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3 text-purple-400" />
+                      <span>Duplicados Evitados</span>
+                    </p>
+                    <p className="text-xl font-black text-purple-300 mt-0.5">
+                      {resultadoParseo.duplicadosOmitidosCount} <span className="text-xs font-normal text-slate-400">líneas</span>
                     </p>
                   </div>
 
                   <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                    <p className="text-[10px] text-slate-400 uppercase font-bold">Sucursales Detectadas</p>
-                    <p className="text-xl font-black text-purple-300 mt-0.5">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold">Filas Descartadas</p>
+                    <p className="text-xl font-black text-amber-400 mt-0.5">
+                      {resultadoParseo.filasDescartadas} <span className="text-xs font-normal text-slate-400">vacías</span>
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold">Sucursales</p>
+                    <p className="text-xl font-black text-blue-300 mt-0.5">
                       {resultadoParseo.sucursalesInvolucradas.length}
                     </p>
                   </div>
                 </div>
+
+                {/* Alerta de Protección Anti-Duplicados */}
+                {resultadoParseo.duplicadosOmitidosCount > 0 && (
+                  <div className="bg-purple-950/40 border border-purple-600/40 rounded-xl p-3.5 text-xs space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-purple-300 font-bold">
+                        <ShieldCheck className="w-4 h-4 text-purple-400 shrink-0" />
+                        <span>🛡️ Protección Anti-Duplicados Activa ({resultadoParseo.duplicadosOmitidosCount} líneas repetidas consolidadas)</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setMostrarDetalleDuplicados(!mostrarDetalleDuplicados)}
+                        className="text-[11px] text-purple-300 hover:text-white underline cursor-pointer font-medium"
+                      >
+                        {mostrarDetalleDuplicados ? 'Ocultar detalles ▲' : 'Ver repuestos protegidos ▼'}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      Se detectaron clientes con el mismo código de repuesto repetido en la misma cotización/orden. El sistema conservó una única versión oficial y consolidó la descripción para evitar duplicidad o triplicidad en la base de datos.
+                    </p>
+                    {mostrarDetalleDuplicados && (
+                      <div className="bg-slate-950/90 rounded-lg p-2.5 max-h-36 overflow-y-auto space-y-1 font-mono text-[10px] text-purple-200 border border-purple-800/40">
+                        {resultadoParseo.duplicadosDetalle.map((d, idx) => (
+                          <div key={idx} className="flex items-start gap-1.5">
+                            <span className="text-purple-400 font-bold">•</span>
+                            <span>{d}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Desglose por Sucursal */}
                 <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-xs space-y-2">

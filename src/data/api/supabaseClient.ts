@@ -124,11 +124,24 @@ export async function guardarPedidoSupabase(payload: {
 }): Promise<{ ok: boolean; folio: string; timestamp: string; error?: string }> {
   const timestamp = new Date().toISOString();
 
+  // 1. Deduplicar líneas internas del formulario si se repite el mismo código
+  const mapaLineasUnicas = new Map<string, typeof payload.lineas[0]>();
+  payload.lineas.forEach(l => {
+    const cod = (l.codigoRepuesto || '').trim().toUpperCase();
+    if (!mapaLineasUnicas.has(cod)) {
+      mapaLineasUnicas.set(cod, { ...l, codigoRepuesto: cod });
+    } else {
+      const exist = mapaLineasUnicas.get(cod)!;
+      exist.cantidad = (Number(exist.cantidad) || 1) + (Number(l.cantidad) || 1);
+    }
+  });
+  const lineasNormalizadas = Array.from(mapaLineasUnicas.values());
+
   // Guardar SIEMPRE en caché local de inmediato para que el pedido esté visible en el Admin sin demora
   try {
     const local = localStorage.getItem('cedis_pedidos_locales');
     const pedidosLocales: FilaRastreador[] = local ? JSON.parse(local) : [];
-    const nuevasFilas: FilaRastreador[] = payload.lineas.map((linea, idx) => ({
+    const nuevasFilas: FilaRastreador[] = lineasNormalizadas.map((linea, idx) => ({
       lineaId: `LIN-${Date.now()}-${idx}`,
       pedidoId: payload.folio,
       codigoRepuesto: linea.codigoRepuesto,
@@ -162,8 +175,20 @@ export async function guardarPedidoSupabase(payload: {
     const guardarOperacion = async () => {
       const fechaActualStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
+      // Verificación de idempotencia: si el folio ya existe en Supabase (ej: doble clic rápido), no duplicar
+      const { data: yaExiste } = await supabase
+        .from('matriz_pedidos')
+        .select('id')
+        .eq('pedido_id', payload.folio)
+        .limit(1);
+
+      if (yaExiste && yaExiste.length > 0) {
+        console.log(`🛡️ [CEDIS ANTI-DUPLICADOS] El pedido ${payload.folio} ya existe en Supabase. Omitiendo duplicación.`);
+        return { ok: true, folio: payload.folio, timestamp };
+      }
+
       // Crear cada fila en matriz_pedidos
-      const filasToInsert = payload.lineas.map((linea) => ({
+      const filasToInsert = lineasNormalizadas.map((linea) => ({
         pedido_id: payload.folio,
         tipo_pedido: payload.tipoPedido || 'Taller Mecánico',
         fecha_creacion: fechaActualStr,
@@ -265,9 +290,9 @@ export async function guardarPedidoSupabase(payload: {
 export async function importarFilasBackupSupabase(
   filas: FilaRastreador[],
   onProgress?: (porcentaje: number) => void
-): Promise<{ ok: boolean; totalInsertadas: number; pedidosUnicos: number; error?: string }> {
+): Promise<{ ok: boolean; totalInsertadas: number; totalExistentesOmitidas: number; pedidosUnicos: number; error?: string }> {
   if (!filas || filas.length === 0) {
-    return { ok: true, totalInsertadas: 0, pedidosUnicos: 0 };
+    return { ok: true, totalInsertadas: 0, totalExistentesOmitidas: 0, pedidosUnicos: 0 };
   }
 
   const pedidosSet = new Set<string>();
@@ -298,25 +323,90 @@ export async function importarFilasBackupSupabase(
     };
   });
 
-  // 1. Guardar en memoria local primero (garantiza persistencia inmediata en frontend)
+  let totalExistentesOmitidas = 0;
+  let payloadFiltrado = payloadToInsert;
+
+  // 1. Verificar registros existentes en Supabase para evitar duplicación o triplicación
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      const pedidosArray = Array.from(pedidosSet);
+      const setExistentes = new Set<string>();
+      const setClientesExistentes = new Set<string>();
+
+      // Consultar en lotes de 40 pedidos
+      for (let i = 0; i < pedidosArray.length; i += 40) {
+        const chunkPedidos = pedidosArray.slice(i, i + 40);
+        const { data: dataExistentes } = await supabase
+          .from('matriz_pedidos')
+          .select('pedido_id, codigo_repuesto, cliente, cotizacion_numero_or')
+          .in('pedido_id', chunkPedidos);
+
+        if (dataExistentes) {
+          dataExistentes.forEach((r: any) => {
+            const pid = String(r.pedido_id || '').trim().toUpperCase();
+            const cod = String(r.codigo_repuesto || '').trim().toUpperCase();
+            const cli = String(r.cliente || '').trim().toUpperCase().replace(/\s+/g, ' ');
+            const or = String(r.cotizacion_numero_or || '').trim().toUpperCase();
+
+            setExistentes.add(`${pid}___${cod}`);
+            setClientesExistentes.add(`${cli}___${or}___${cod}`);
+          });
+        }
+      }
+
+      // Filtrar filas que ya existen exactamente en la base de datos
+      const nuevasFilas: typeof payloadToInsert = [];
+      payloadToInsert.forEach(item => {
+        const pid = String(item.pedido_id || '').trim().toUpperCase();
+        const cod = String(item.codigo_repuesto || '').trim().toUpperCase();
+        const cli = String(item.cliente || '').trim().toUpperCase().replace(/\s+/g, ' ');
+        const or = String(item.cotizacion_numero_or || '').trim().toUpperCase();
+
+        const keyPedido = `${pid}___${cod}`;
+        const keyCliente = `${cli}___${or}___${cod}`;
+
+        if (setExistentes.has(keyPedido) || setClientesExistentes.has(keyCliente)) {
+          totalExistentesOmitidas++;
+        } else {
+          nuevasFilas.push(item);
+          // Registrar en sets locales para no duplicar dentro del mismo archivo
+          setExistentes.add(keyPedido);
+          setClientesExistentes.add(keyCliente);
+        }
+      });
+
+      payloadFiltrado = nuevasFilas;
+      console.log(`🛡️ [CEDIS ANTI-DUPLICADOS] Filas a insertar: ${payloadFiltrado.length}, Filas ya existentes omitidas: ${totalExistentesOmitidas}`);
+    } catch (errCheck) {
+      console.warn('Advertencia al consultar filas existentes en Supabase:', errCheck);
+      // Continuar con el lote original si la consulta previa falló
+    }
+  }
+
+  // 2. Guardar en memoria local (garantiza persistencia inmediata en frontend)
   try {
     const rawLocal = localStorage.getItem('cedis_filas_admin');
     const locales: any[] = rawLocal ? JSON.parse(rawLocal) : [];
     const mapaLocales = new Map<string, any>();
-    locales.forEach(l => mapaLocales.set(`${l.pedidoId}_${l.codigoRepuesto}`, l));
-    filas.forEach(f => mapaLocales.set(`${f.pedidoId}_${f.codigoRepuesto}`, f));
+    locales.forEach(l => mapaLocales.set(`${l.pedidoId}_${l.codigoRepuesto}`.toUpperCase(), l));
+    filas.forEach(f => {
+      const k = `${f.pedidoId}_${f.codigoRepuesto}`.toUpperCase();
+      if (!mapaLocales.has(k)) {
+        mapaLocales.set(k, f);
+      }
+    });
     localStorage.setItem('cedis_filas_admin', JSON.stringify(Array.from(mapaLocales.values())));
   } catch (e) {
     console.warn('Error guardando backup en localStorage:', e);
   }
 
-  // 2. Insertar en Supabase en lotes de 50 filas
-  if (isSupabaseConfigured()) {
+  // 3. Insertar en Supabase solo las filas realmente nuevas en lotes de 50
+  if (isSupabaseConfigured() && supabase && payloadFiltrado.length > 0) {
     const CHUNK_SIZE = 50;
     let procesadas = 0;
 
-    for (let i = 0; i < payloadToInsert.length; i += CHUNK_SIZE) {
-      const chunk = payloadToInsert.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < payloadFiltrado.length; i += CHUNK_SIZE) {
+      const chunk = payloadFiltrado.slice(i, i + CHUNK_SIZE);
       let { error } = await supabase.from('matriz_pedidos').insert(chunk);
 
       if (error && (error.message.includes('relation') || error.message.includes('does not exist'))) {
@@ -328,7 +418,7 @@ export async function importarFilasBackupSupabase(
 
       procesadas += chunk.length;
       if (onProgress) {
-        onProgress(Math.round((procesadas / payloadToInsert.length) * 100));
+        onProgress(Math.round((procesadas / payloadFiltrado.length) * 100));
       }
     }
   } else {
@@ -337,7 +427,8 @@ export async function importarFilasBackupSupabase(
 
   return {
     ok: true,
-    totalInsertadas: payloadToInsert.length,
+    totalInsertadas: payloadFiltrado.length,
+    totalExistentesOmitidas,
     pedidosUnicos: pedidosSet.size,
   };
 }
@@ -833,15 +924,27 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
 
     // Fusión inteligente: deduplicar y consolidar la información más completa para cada repuesto
     const mapaUnicos = new Map<string, FilaRastreador>();
+    const mapaClientes = new Map<string, FilaRastreador>();
+
     filasSupabase.forEach(f => {
-      // Clave única compuesta por Pedido + Código de Repuesto (o lineaId si no hay código)
+      // Clave primaria: Pedido + Código de Repuesto (o lineaId si no hay código)
       const key = `${f.pedidoId}___${f.codigoRepuesto || f.lineaId}`.toUpperCase();
 
-      if (!mapaUnicos.has(key)) {
+      // Clave secundaria: Cliente + Cotización/OT + Código de Repuesto (protección contra duplicación multi-origen)
+      const clienteNorm = (f.cliente || '').trim().toUpperCase().replace(/\s+/g, ' ');
+      const cotizNorm = (f.numeroOR || '').trim().toUpperCase();
+      const codNorm = (f.codigoRepuesto || '').trim().toUpperCase();
+      const clientKey = (clienteNorm && clienteNorm !== 'CONSUMIDOR FINAL' && codNorm)
+        ? `${clienteNorm}___${cotizNorm}___${codNorm}`
+        : '';
+
+      const exist = mapaUnicos.get(key) || (clientKey ? mapaClientes.get(clientKey) : undefined);
+
+      if (!exist) {
         mapaUnicos.set(key, f);
+        if (clientKey) mapaClientes.set(clientKey, f);
       } else {
-        const exist = mapaUnicos.get(key)!;
-        // Si el registro existente tenía placeholders y este tiene datos reales, enriquecer
+        // Enriquecer registro existente con los datos más detallados
         if ((!exist.cliente || exist.cliente === 'Consumidor Final') && f.cliente && f.cliente !== 'Consumidor Final') {
           exist.cliente = f.cliente;
         }
@@ -853,9 +956,17 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
         if (!exist.contenedorAsignado && f.contenedorAsignado) exist.contenedorAsignado = f.contenedorAsignado;
         if (!exist.palletAsignado && f.palletAsignado) exist.palletAsignado = f.palletAsignado;
         if (!exist.codigoRepuesto && f.codigoRepuesto) exist.codigoRepuesto = f.codigoRepuesto;
-        if (!exist.descripcionOficial && f.descripcionOficial) exist.descripcionOficial = f.descripcionOficial;
+        if ((!exist.descripcionOficial || exist.descripcionOficial.length < (f.descripcionOficial || '').length) && f.descripcionOficial) {
+          exist.descripcionOficial = f.descripcionOficial;
+        }
         if (exist.estatusLinea === 'Pendiente' && f.estatusLinea !== 'Pendiente') {
           exist.estatusLinea = f.estatusLinea;
+        }
+        if (f.cantidadAsignada > exist.cantidadAsignada) {
+          exist.cantidadAsignada = f.cantidadAsignada;
+        }
+        if (f.cantidadDespachada > exist.cantidadDespachada) {
+          exist.cantidadDespachada = f.cantidadDespachada;
         }
       }
     });
@@ -1106,7 +1217,7 @@ export async function actualizarEstadoManifiestoSupabase(
     }
 
     // 2. Supabase
-    if (isSupabaseConfigured()) {
+    if (isSupabaseConfigured() && supabase) {
       const { error: err1 } = await supabase
         .from('dpl_manifiestos')
         .update({ estado: nuevoEstado })
@@ -1367,6 +1478,142 @@ export async function eliminarPedidosSupabase(
   } catch (err: any) {
     console.error('Error al eliminar pedidos en Supabase:', err);
     return { ok: false, count: 0, error: err.message };
+  }
+}
+
+/**
+ * Escanea la base de datos Supabase en busca de registros duplicados o triplicados
+ * (mismo pedido_id y codigo_repuesto, o mismo cliente + cotizacion + codigo_repuesto).
+ * Conserva la fila canónica (la más completa, con asignaciones de contenedor o estatus no pendiente)
+ * y elimina de manera segura las filas redundantes en Supabase.
+ */
+export async function depurarDuplicadosSupabase(): Promise<{
+  ok: boolean;
+  eliminadosCount: number;
+  gruposDuplicadosCount: number;
+  error?: string;
+}> {
+  if (!supabase || !isSupabaseConfigured()) {
+    // Si no hay Supabase, limpiar duplicados en localStorage
+    try {
+      const rawLocal = localStorage.getItem('cedis_pedidos_locales');
+      if (rawLocal) {
+        const locales: FilaRastreador[] = JSON.parse(rawLocal);
+        const mapa = new Map<string, FilaRastreador>();
+        locales.forEach(f => {
+          const k = `${f.pedidoId}___${f.codigoRepuesto}`.toUpperCase();
+          if (!mapa.has(k)) mapa.set(k, f);
+        });
+        localStorage.setItem('cedis_pedidos_locales', JSON.stringify(Array.from(mapa.values())));
+      }
+    } catch {}
+    return { ok: true, eliminadosCount: 0, gruposDuplicadosCount: 0 };
+  }
+
+  try {
+    // 1. Obtener todas las filas de matriz_pedidos
+    let todasLasFilas: any[] = [];
+    const PAGE_SIZE = 1000;
+    let page = 0;
+
+    while (true) {
+      const start = page * PAGE_SIZE;
+      const end = start + PAGE_SIZE - 1;
+      const { data, error } = await supabase
+        .from('matriz_pedidos')
+        .select('*')
+        .range(start, end);
+
+      if (error || !data || data.length === 0) break;
+      todasLasFilas.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      page++;
+      if (page >= 10) break;
+    }
+
+    if (todasLasFilas.length === 0) {
+      return { ok: true, eliminadosCount: 0, gruposDuplicadosCount: 0 };
+    }
+
+    // 2. Agrupar filas duplicadas por Pedido + Código de Repuesto
+    const grupos = new Map<string, any[]>();
+    todasLasFilas.forEach(f => {
+      const pid = String(f.pedido_id || '').trim().toUpperCase();
+      const cod = String(f.codigo_repuesto || '').trim().toUpperCase();
+      const keyPrincipal = `${pid}___${cod}`;
+      if (!grupos.has(keyPrincipal)) {
+        grupos.set(keyPrincipal, []);
+      }
+      grupos.get(keyPrincipal)!.push(f);
+    });
+
+    const idsAEliminar: string[] = [];
+    let gruposDuplicadosCount = 0;
+
+    grupos.forEach(filasGrupo => {
+      if (filasGrupo.length > 1) {
+        gruposDuplicadosCount++;
+
+        // Ordenar: filas con asignaciones de contenedor/pallet o estatus más avanzado tienen prioridad
+        filasGrupo.sort((a, b) => {
+          let scoreA = 0;
+          let scoreB = 0;
+
+          if (a.contenedor_asignado) scoreA += 10;
+          if (b.contenedor_asignado) scoreB += 10;
+
+          if (a.pallet_asignado) scoreA += 10;
+          if (b.pallet_asignado) scoreB += 10;
+
+          if (a.estatus_linea && a.estatus_linea !== 'Pendiente') scoreA += 5;
+          if (b.estatus_linea && b.estatus_linea !== 'Pendiente') scoreB += 5;
+
+          if (Number(a.cantidad_despachada) > 0) scoreA += 5;
+          if (Number(b.cantidad_despachada) > 0) scoreB += 5;
+
+          if (a.descripcion_oficial && a.descripcion_oficial.length > 5) scoreA += 2;
+          if (b.descripcion_oficial && b.descripcion_oficial.length > 5) scoreB += 2;
+
+          return scoreB - scoreA;
+        });
+
+        // La primera fila (índice 0) es la canónica preservada.
+        // Las restantes (índice 1 en adelante) son copias redundantes a eliminar.
+        for (let i = 1; i < filasGrupo.length; i++) {
+          if (filasGrupo[i].id) {
+            idsAEliminar.push(filasGrupo[i].id);
+          }
+        }
+      }
+    });
+
+    // 3. Eliminar de Supabase en lotes seguros de 50 IDs
+    if (idsAEliminar.length > 0) {
+      console.log(`🛡️ [CEDIS ANTI-DUPLICADOS] Purgando ${idsAEliminar.length} registros duplicados de Supabase...`);
+      for (let i = 0; i < idsAEliminar.length; i += 50) {
+        const lote = idsAEliminar.slice(i, i + 50);
+        await supabase.from('matriz_pedidos').delete().in('id', lote);
+      }
+    }
+
+    // 4. Limpiar caché local
+    try {
+      localStorage.removeItem('cedis_filas_admin');
+    } catch {}
+
+    return {
+      ok: true,
+      eliminadosCount: idsAEliminar.length,
+      gruposDuplicadosCount,
+    };
+  } catch (err: any) {
+    console.error('Error en depurarDuplicadosSupabase:', err);
+    return {
+      ok: false,
+      eliminadosCount: 0,
+      gruposDuplicadosCount: 0,
+      error: err.message || String(err),
+    };
   }
 }
 
@@ -1826,14 +2073,14 @@ export async function obtenerHistorialAsesorSupabase(
       if (!pedidosMap.has(pedId)) {
         pedidosMap.set(pedId, {
           pedidoId: fila.pedidoId,
-          fechaCreacion: fila.fechaCreacion || '',
+          fechaCreacion: (fila as any).fechaCreacion || '',
           sucursal: fila.sucursal || sucursal || 'Villa Lucre',
           colaborador: fila.colaborador || colaborador || 'Asesor',
           cliente: fila.cliente || 'Consumidor Final',
           modeloChangan: fila.modeloChangan || 'Changan',
           vin: fila.vin || '',
           numeroOR: fila.numeroOR || '',
-          tipoPedido: fila.tipoPedido || 'Taller Mecánico',
+          tipoPedido: (fila as any).tipoPedido || 'Taller Mecánico',
           totalItems: 1,
           cantidadSolicitadaTotal: cantSol,
           cantidadAsignadaTotal: cantAsig,
