@@ -108,6 +108,8 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   // Filtros de búsqueda en pedidos
   const [filtroSucursal, setFiltroSucursal] = useState<string>('TODAS');
   const [filtroEstatus, setFiltroEstatus] = useState<string>('ACTIVOS');
+  const [filtroContenedor, setFiltroContenedor] = useState<string>('TODOS');
+  const [filtroPallet, setFiltroPallet] = useState<string>('TODOS');
   const [busquedaPedido, setBusquedaPedido] = useState<string>('');
   const [depurandoMatriz, setDepurandoMatriz] = useState<boolean>(false);
 
@@ -764,6 +766,22 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
           : (filtroEstatus === 'Pendiente' && (f.estatusLinea === 'Pendiente' || !f.estatusLinea)) ||
             f.estatusLinea?.toLowerCase() === filtroEstatus.toLowerCase();
 
+      // Filtro por Contenedor
+      const coincideContenedor =
+        filtroContenedor === 'TODOS'
+          ? true
+          : filtroContenedor === 'SIN_CONTENEDOR'
+          ? !f.contenedorAsignado || f.contenedorAsignado.trim() === '' || f.contenedorAsignado.toLowerCase() === 'por asignar' || f.contenedorAsignado === '-'
+          : (f.contenedorAsignado || '').trim().toUpperCase() === filtroContenedor.trim().toUpperCase();
+
+      // Filtro por Pallet / Case
+      const coincidePallet =
+        filtroPallet === 'TODOS'
+          ? true
+          : filtroPallet === 'SIN_PALLET'
+          ? !f.palletAsignado || f.palletAsignado.trim() === '' || f.palletAsignado.toLowerCase() === 'por asignar' || f.palletAsignado === '-'
+          : (f.palletAsignado || '').trim().toUpperCase() === filtroPallet.trim().toUpperCase();
+
       const q = busquedaPedido.trim().toLowerCase();
       const coincideTexto =
         !q ||
@@ -772,11 +790,13 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         f.cliente.toLowerCase().includes(q) ||
         f.numeroOR.toLowerCase().includes(q) ||
         f.vin.toLowerCase().includes(q) ||
-        f.pedidoId.toLowerCase().includes(q);
+        f.pedidoId.toLowerCase().includes(q) ||
+        (f.contenedorAsignado && f.contenedorAsignado.toLowerCase().includes(q)) ||
+        (f.palletAsignado && f.palletAsignado.toLowerCase().includes(q));
 
-      return coincideSucursal && coincideEstatus && coincideTexto;
+      return coincideSucursal && coincideEstatus && coincideContenedor && coincidePallet && coincideTexto;
     });
-  }, [filas, filtroSucursal, filtroEstatus, busquedaPedido]);
+  }, [filas, filtroSucursal, filtroEstatus, filtroContenedor, filtroPallet, busquedaPedido]);
 
   // Filtrado de inventario
   const inventarioFiltrado = useMemo(() => {
@@ -823,6 +843,38 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     });
     return list;
   }, [filas]);
+
+  // Contenedores únicos detectados en pedidos e inventario
+  const contenedoresUnicos = useMemo(() => {
+    const set = new Set<string>();
+    filas.forEach(f => {
+      const c = (f.contenedorAsignado || '').trim();
+      if (c && c !== '-' && c.toLowerCase() !== 'por asignar' && c.toLowerCase() !== 'sin embarque') {
+        set.add(c);
+      }
+    });
+    manifiestos.forEach(m => {
+      const c = (m.contenedorId || '').trim();
+      if (c) set.add(c);
+    });
+    return Array.from(set).sort();
+  }, [filas, manifiestos]);
+
+  // Pallets únicos detectados en pedidos e inventario
+  const palletsUnicos = useMemo(() => {
+    const set = new Set<string>();
+    filas.forEach(f => {
+      const p = (f.palletAsignado || '').trim();
+      if (p && p !== '-' && p.toLowerCase() !== 'por asignar') {
+        set.add(p);
+      }
+    });
+    inventario.forEach(i => {
+      const p = (i.palletCaseNo || '').trim();
+      if (p) set.add(p);
+    });
+    return Array.from(set).sort();
+  }, [filas, inventario]);
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 flex flex-col font-sans">
@@ -1100,7 +1152,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 </div>
 
                 {/* Barra de Filtros y Búsqueda */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 mt-4">
                   {/* Buscador */}
                   <div className="relative">
                     <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
@@ -1118,7 +1170,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     <select
                       value={filtroSucursal}
                       onChange={e => setFiltroSucursal(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-medium"
+                      className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-medium"
                     >
                       <option value="TODAS">🏢 Todas las Sucursales</option>
                       {sucursalesUnicas.map(s => (
@@ -1132,7 +1184,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     <select
                       value={filtroEstatus}
                       onChange={e => setFiltroEstatus(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-medium"
+                      className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-medium"
                     >
                       <option value="ACTIVOS">⚡ Activos por Despachar (Excluye Despachados)</option>
                       <option value="Pendiente">🟡 Solo Pendientes</option>
@@ -1143,14 +1195,54 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     </select>
                   </div>
 
+                  {/* Filtro Contenedor */}
+                  <div>
+                    <select
+                      value={filtroContenedor}
+                      onChange={e => setFiltroContenedor(e.target.value)}
+                      className={`w-full px-2.5 py-2 text-xs bg-white border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-medium transition ${
+                        filtroContenedor !== 'TODOS'
+                          ? 'border-blue-500 bg-blue-50/80 text-blue-900 font-bold'
+                          : 'border-slate-300 text-slate-700'
+                      }`}
+                    >
+                      <option value="TODOS">🚢 Contenedor: Todos ({contenedoresUnicos.length})</option>
+                      <option value="SIN_CONTENEDOR">⚪ Sin Contenedor asignado</option>
+                      {contenedoresUnicos.map(c => (
+                        <option key={c} value={c}>Contenedor: {c}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Filtro Pallet */}
+                  <div>
+                    <select
+                      value={filtroPallet}
+                      onChange={e => setFiltroPallet(e.target.value)}
+                      className={`w-full px-2.5 py-2 text-xs bg-white border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-medium transition ${
+                        filtroPallet !== 'TODOS'
+                          ? 'border-amber-500 bg-amber-50/80 text-amber-900 font-bold'
+                          : 'border-slate-300 text-slate-700'
+                      }`}
+                    >
+                      <option value="TODOS">📦 Pallet: Todos ({palletsUnicos.length})</option>
+                      <option value="SIN_PALLET">⚪ Sin Pallet asignado</option>
+                      {palletsUnicos.map(p => (
+                        <option key={p} value={p}>Pallet: {p}</option>
+                      ))}
+                    </select>
+                  </div>
+
                   {/* Reset Filters */}
                   <button
                     onClick={() => {
                       setBusquedaPedido('');
                       setFiltroSucursal('TODAS');
                       setFiltroEstatus('ACTIVOS');
+                      setFiltroContenedor('TODOS');
+                      setFiltroPallet('TODOS');
                     }}
-                    className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-200/70 hover:bg-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                    className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-200/70 hover:bg-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <i className="fas fa-undo"></i>Limpiar Filtros
                   </button>
@@ -1172,11 +1264,11 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     <div className="flex items-center gap-2 flex-wrap">
                       <button
                         onClick={handleImprimirEtiquetasLote}
-                        className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-700 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm"
+                        className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-700 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
                         title="Imprimir etiquetas de pedidos especiales (100x150mm) para los pedidos seleccionados"
                       >
                         <i className="fas fa-tags text-cyan-200"></i>
-                        <span>Imprimir Etiquetas PDF</span>
+                        <span>Imprimir Etiquetas PDF ({selectedLineas.size})</span>
                       </button>
 
                       <button
@@ -1304,8 +1396,15 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                                 ) : (
                                   <span className="text-slate-400 italic">Por asignar</span>
                                 )}
+                                {fila.contenedorAsignado && (
+                                  <span className="block text-[10px] text-blue-600 font-semibold truncate max-w-[140px]" title={`Contenedor: ${fila.contenedorAsignado}`}>
+                                    <i className="fas fa-ship mr-1 text-[9px]"></i>{fila.contenedorAsignado}
+                                  </span>
+                                )}
                                 {fila.palletAsignado && (
-                                  <span className="block text-[10px] text-slate-400">Pallet: {fila.palletAsignado}</span>
+                                  <span className="block text-[10px] text-amber-700 font-semibold" title={`Pallet: ${fila.palletAsignado}`}>
+                                    <i className="fas fa-pallet mr-1 text-[9px]"></i>Pallet: {fila.palletAsignado}
+                                  </span>
                                 )}
                               </td>
 
