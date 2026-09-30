@@ -71,7 +71,23 @@ const DEMO_FILAS: FilaRastreador[] = [
 type VistaAdmin = 'dashboard' | 'despachos' | 'inventario' | 'kpis' | 'matching' | 'cruceDPL' | 'encargados';
 
 export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) {
-  const [vistaActiva, setVistaActiva] = useState<VistaAdmin>('dashboard');
+  const [vistaActiva, setVistaActivaState] = useState<VistaAdmin>(() => {
+    try {
+      const saved = localStorage.getItem('cedis_admin_active_tab') as VistaAdmin;
+      const validas: VistaAdmin[] = ['dashboard', 'despachos', 'inventario', 'kpis', 'matching', 'cruceDPL', 'encargados'];
+      if (saved && validas.includes(saved)) {
+        return saved;
+      }
+    } catch {}
+    return 'dashboard';
+  });
+
+  const setVistaActiva = (nuevaVista: VistaAdmin) => {
+    setVistaActivaState(nuevaVista);
+    try {
+      localStorage.setItem('cedis_admin_active_tab', nuevaVista);
+    } catch {}
+  };
   const [modalRastreadorAbierto, setModalRastreadorAbierto] = useState(false);
   const [codigoInicial, setCodigoInicial] = useState('');
   const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
