@@ -15,6 +15,7 @@ import type {
 import { ModalRastreadorUniversal } from './ModalRastreadorUniversal';
 import { ModalCargaDPL } from './ModalCargaDPL';
 import { ModalImportarBackup } from './ModalImportarBackup';
+import { ModalEditarPedido } from './ModalEditarPedido';
 import { calcularKPIs, ejecutarMatchingFIFO } from '../../domain/services';
 import { CruceDPL } from './CruceDPL';
 import {
@@ -94,6 +95,8 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   const [codigoInicial, setCodigoInicial] = useState('');
   const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
   const [modalBackupAbierto, setModalBackupAbierto] = useState(false);
+  const [modalEditarAbierto, setModalEditarAbierto] = useState(false);
+  const [filaAEditar, setFilaAEditar] = useState<FilaRastreador | null>(null);
 
   // Estados reactivos de datos
   const [filas, setFilas] = useState<FilaRastreador[]>(DEMO_FILAS);
@@ -278,6 +281,20 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     } finally {
       setDepurandoMatriz(false);
     }
+  };
+
+  // Abrir modal de edición completa
+  const handleAbrirModalEditar = (fila: FilaRastreador) => {
+    setFilaAEditar(fila);
+    setModalEditarAbierto(true);
+  };
+
+  // Callback al guardar edición
+  const handleGuardadoEdicion = (filaActualizada: FilaRastreador) => {
+    setFilas(prev =>
+      prev.map(f => (f.lineaId === filaActualizada.lineaId ? filaActualizada : f))
+    );
+    notificar(`Pedido ${filaActualizada.pedidoId} (${filaActualizada.codigoRepuesto}) actualizado con éxito.`);
   };
 
   // Eliminación individual de un pedido
@@ -1487,6 +1504,16 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                                     <span>Etiqueta</span>
                                   </button>
 
+                                  {/* Botón Editar Información Completa */}
+                                  <button
+                                    onClick={() => handleAbrirModalEditar(fila)}
+                                    className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded font-bold text-[11px] transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
+                                    title="Editar información completa del pedido (cliente, vehículo, repuesto, cantidades, estatus, bodega)"
+                                  >
+                                    <i className="fas fa-edit text-amber-600"></i>
+                                    <span>Editar</span>
+                                  </button>
+
                                   {/* Botón Rastreador */}
                                   <button
                                     onClick={() => handleAbrirRastreador(fila.codigoRepuesto)}
@@ -2579,6 +2606,17 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
           cargarDatos(true);
           notificar(`¡Backup importado con éxito! ${totalLineas} repuestos en ${pedidosUnicos} pedidos.`);
         }}
+      />
+
+      {/* Modal Editar Pedido / Repuesto Completo */}
+      <ModalEditarPedido
+        isOpen={modalEditarAbierto}
+        fila={filaAEditar}
+        onClose={() => {
+          setModalEditarAbierto(false);
+          setFilaAEditar(null);
+        }}
+        onGuardadoExitoso={handleGuardadoEdicion}
       />
     </div>
   );

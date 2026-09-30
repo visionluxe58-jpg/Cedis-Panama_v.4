@@ -1432,6 +1432,131 @@ export async function actualizarEstatusPedidoSupabase(
   }
 }
 
+export interface DatosEdicionPedido {
+  cliente: string;
+  sucursal: string;
+  colaborador: string;
+  numeroOR: string;
+  modeloChangan: string;
+  vin: string;
+  codigoRepuesto: string;
+  descripcionOficial: string;
+  cantidadSolicitada: number;
+  estatusLinea: string;
+  contenedorAsignado?: string;
+  palletAsignado?: string;
+  ubicacionCedis?: string;
+}
+
+/**
+ * Actualiza la información completa de un pedido/repuesto tanto en Supabase como en la memoria local
+ */
+export async function actualizarFilaAdminSupabase(
+  filaOriginal: FilaRastreador,
+  cambios: DatosEdicionPedido
+): Promise<{ ok: boolean; error?: string }> {
+  const updatePayload: Record<string, any> = {
+    cliente: cambios.cliente,
+    sucursal: cambios.sucursal,
+    colaborador: cambios.colaborador,
+    cotizacion_numero_or: cambios.numeroOR,
+    modelo_changan: cambios.modeloChangan,
+    vin: cambios.vin,
+    codigo_repuesto: cambios.codigoRepuesto,
+    descripcion_oficial: cambios.descripcionOficial,
+    cantidad_solicitada: cambios.cantidadSolicitada,
+    estatus_linea: cambios.estatusLinea,
+  };
+
+  if (cambios.contenedorAsignado !== undefined) {
+    updatePayload.contenedor_asignado = cambios.contenedorAsignado;
+  }
+  if (cambios.palletAsignado !== undefined) {
+    updatePayload.pallet_asignado = cambios.palletAsignado;
+  }
+  if (cambios.ubicacionCedis !== undefined) {
+    updatePayload.ubicacion_cedis = cambios.ubicacionCedis;
+  }
+
+  // 1. Actualizar en Supabase
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      const esUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(filaOriginal.lineaId);
+
+      let exito = false;
+      if (esUUID) {
+        const { error, count } = await supabase
+          .from('matriz_pedidos')
+          .update(updatePayload)
+          .eq('id', filaOriginal.lineaId);
+
+        if (!error && (count === null || count > 0)) {
+          exito = true;
+        }
+      }
+
+      // Si no fue UUID o no encontró por id, actualizar por pedido_id + codigo_repuesto
+      if (!exito) {
+        await supabase
+          .from('matriz_pedidos')
+          .update(updatePayload)
+          .eq('pedido_id', filaOriginal.pedidoId)
+          .eq('codigo_repuesto', filaOriginal.codigoRepuesto);
+      }
+
+      // Fallback a matriz_central
+      await supabase
+        .from('matriz_central')
+        .update(updatePayload)
+        .eq('pedido_id', filaOriginal.pedidoId)
+        .eq('codigo_repuesto', filaOriginal.codigoRepuesto);
+
+    } catch (err: any) {
+      console.error('Error al actualizar fila en Supabase:', err);
+      return { ok: false, error: err.message };
+    }
+  }
+
+  // 2. Actualizar caché local
+  try {
+    const rawLocal = localStorage.getItem('cedis_pedidos_locales');
+    if (rawLocal) {
+      const locales: FilaRastreador[] = JSON.parse(rawLocal);
+      const actualizados = locales.map(item => {
+        if (item.lineaId === filaOriginal.lineaId || (item.pedidoId === filaOriginal.pedidoId && item.codigoRepuesto === filaOriginal.codigoRepuesto)) {
+          return {
+            ...item,
+            ...cambios,
+          };
+        }
+        return item;
+      });
+      localStorage.setItem('cedis_pedidos_locales', JSON.stringify(actualizados));
+    }
+  } catch (e) {
+    console.warn('Error actualizando caché local:', e);
+  }
+
+  try {
+    const rawAdmin = localStorage.getItem('cedis_filas_admin');
+    if (rawAdmin) {
+      const adminRows: FilaRastreador[] = JSON.parse(rawAdmin);
+      const actualizados = adminRows.map(item => {
+        if (item.lineaId === filaOriginal.lineaId || (item.pedidoId === filaOriginal.pedidoId && item.codigoRepuesto === filaOriginal.codigoRepuesto)) {
+          return {
+            ...item,
+            ...cambios,
+          };
+        }
+        return item;
+      });
+      localStorage.setItem('cedis_filas_admin', JSON.stringify(actualizados));
+    }
+  } catch {}
+
+  return { ok: true };
+}
+
 /**
  * Elimina uno o múltiples pedidos tanto de la memoria local como de Supabase
  */
