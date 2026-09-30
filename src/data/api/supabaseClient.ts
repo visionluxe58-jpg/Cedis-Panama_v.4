@@ -1910,6 +1910,66 @@ export async function guardarDespachoSupabase(
 }
 
 /**
+ * Importa un lote de despachos a Supabase y al almacenamiento local
+ */
+export async function importarDespachosLoteSupabase(
+  despachosNuevos: DespachoRegistro[]
+): Promise<{ ok: boolean; guardados: number; error?: string }> {
+  if (!despachosNuevos || despachosNuevos.length === 0) {
+    return { ok: true, guardados: 0 };
+  }
+
+  // 1. Guardar en caché local
+  try {
+    const rawLocal = localStorage.getItem(STORAGE_KEY_DESPACHOS);
+    const despachosLocales: DespachoRegistro[] = rawLocal ? JSON.parse(rawLocal) : [];
+    const clavesExistentes = new Set(despachosLocales.map(d => `${d.pedidoId}__${d.numeroGuia}`));
+    
+    const nuevosFiltrados = despachosNuevos.filter(d => !clavesExistentes.has(`${d.pedidoId}__${d.numeroGuia}`));
+    const combinados = [...nuevosFiltrados, ...despachosLocales];
+    localStorage.setItem(STORAGE_KEY_DESPACHOS, JSON.stringify(combinados));
+  } catch (e) {
+    console.warn('Error sincronizando caché local de despachos:', e);
+  }
+
+  if (!supabase || !isSupabaseConfigured()) {
+    return { ok: true, guardados: despachosNuevos.length };
+  }
+
+  try {
+    const payloads = despachosNuevos.map(d => ({
+      numero_guia: d.numeroGuia,
+      pedido_id: d.pedidoId,
+      sucursal_destino: d.sucursalDestino,
+      transportista: d.transportista,
+      placa_vehiculo: d.placaVehiculo,
+      despachador_cedis: d.despachadorCedis,
+      fecha_despacho: d.fechaDespacho,
+      total_piezas: d.totalPiezas,
+      total_lineas: d.totalLineas,
+      estado_entrega: d.estadoEntrega,
+      observaciones: d.observaciones || '',
+      lineas_json: d.lineasJson || '',
+    }));
+
+    // Inserción en bloques de 30 para evitar sobrecarga
+    const CHUNK_SIZE = 30;
+    for (let i = 0; i < payloads.length; i += CHUNK_SIZE) {
+      const chunk = payloads.slice(i, i + CHUNK_SIZE);
+      const { error } = await supabase.from('despachos').insert(chunk);
+      if (error) {
+        console.warn('Advertencia al insertar lote de despachos en Supabase:', error.message);
+      }
+    }
+
+    return { ok: true, guardados: despachosNuevos.length };
+  } catch (err: any) {
+    console.error('Error importando despachos a Supabase:', err);
+    return { ok: true, guardados: despachosNuevos.length, error: err.message };
+  }
+}
+
+/**
  * Obtiene el historial de despachos desde Supabase (con fallback a caché local)
  */
 export async function obtenerDespachosSupabase(): Promise<DespachoRegistro[]> {
@@ -1932,21 +1992,40 @@ export async function obtenerDespachosSupabase(): Promise<DespachoRegistro[]> {
       .order('created_at', { ascending: false });
 
     if (!error && data && data.length > 0) {
-      return data.map((d: any) => ({
-        id: String(getField(d, ['id', 'despacho_id']) || `DSP-${Math.random().toString().slice(-5)}`),
-        numeroGuia: String(getField(d, ['numero_guia', 'guia', 'no_guia']) || 'GUIA-000'),
-        pedidoId: String(getField(d, ['pedido_id', 'id_pedido', 'pedido']) || 'PED-GEN'),
-        sucursalDestino: String(getField(d, ['sucursal_destino', 'sucursal', 'destino']) || 'Villa Lucre'),
-        transportista: String(getField(d, ['transportista', 'chofer', 'conductor']) || 'Transporte CEDIS'),
-        placaVehiculo: String(getField(d, ['placa_vehiculo', 'placa', 'unidad']) || 'CAMION-01'),
-        despachadorCedis: String(getField(d, ['despachador_cedis', 'despachador', 'usuario']) || 'Admin CEDIS'),
-        fechaDespacho: String(getField(d, ['fecha_despacho', 'fecha', 'created_at']) || new Date().toISOString().slice(0, 10)),
-        totalPiezas: Number(getField(d, ['total_piezas', 'piezas', 'total_items'])) || 1,
-        totalLineas: Number(getField(d, ['total_lineas', 'lineas'])) || 1,
-        estadoEntrega: (getField(d, ['estado_entrega', 'estado', 'estatus']) || 'EN TRANSITO').toUpperCase() as any,
-        observaciones: String(getField(d, ['observaciones', 'notas']) || ''),
-        lineasJson: String(getField(d, ['lineas_json', 'detalle']) || ''),
-      }));
+      return data.map((d: any) => {
+        const pedidoId = String(getField(d, ['pedido_id', 'id_pedido', 'pedido', 'ID Pedido']) || 'PED-GEN');
+        const sku = String(getField(d, ['codigo_repuesto', 'sku', 'repuesto', 'SKU / Repuesto']) || '');
+        const desc = String(getField(d, ['descripcion', 'pieza', 'Descripción Pieza']) || '');
+        const rawLineas = getField(d, ['lineas_json', 'detalle', 'lineasJson']);
+
+        let lineasJson = String(rawLineas || '');
+        if (!lineasJson && (sku || desc)) {
+          lineasJson = JSON.stringify([{
+            codigoRepuesto: sku,
+            descripcionOficial: desc,
+            cantidadSolicitada: Number(getField(d, ['total_piezas', 'piezas', 'cantidad_despachada', 'Cantidad Despachada'])) || 1,
+            cantidadDespachada: Number(getField(d, ['total_piezas', 'piezas', 'cantidad_despachada', 'Cantidad Despachada'])) || 1,
+            cliente: String(getField(d, ['cliente', 'Cliente']) || ''),
+            sucursal: String(getField(d, ['sucursal_destino', 'sucursal', 'Sucursal Destino']) || ''),
+          }]);
+        }
+
+        return {
+          id: String(getField(d, ['id', 'despacho_id']) || `DSP-${Math.random().toString().slice(-5)}`),
+          numeroGuia: String(getField(d, ['numero_guia', 'guia', 'no_guia', 'guia_despacho']) || `ACTA-${pedidoId}`),
+          pedidoId: pedidoId,
+          sucursalDestino: String(getField(d, ['sucursal_destino', 'sucursal', 'destino', 'Sucursal Destino']) || 'Villa Lucre'),
+          transportista: String(getField(d, ['transportista', 'chofer', 'conductor', 'Usuario Responsable']) || 'Transporte CEDIS'),
+          placaVehiculo: String(getField(d, ['placa_vehiculo', 'placa', 'unidad']) || 'CAMION-01'),
+          despachadorCedis: String(getField(d, ['despachador_cedis', 'despachador', 'usuario', 'Usuario Responsable']) || 'Admin CEDIS'),
+          fechaDespacho: String(getField(d, ['fecha_despacho', 'fecha', 'Fecha/Hora Despacho', 'created_at']) || new Date().toISOString().slice(0, 10)),
+          totalPiezas: Number(getField(d, ['total_piezas', 'piezas', 'total_items', 'cantidad_despachada', 'Cantidad Despachada'])) || 1,
+          totalLineas: Number(getField(d, ['total_lineas', 'lineas'])) || 1,
+          estadoEntrega: (getField(d, ['estado_entrega', 'estado', 'estatus', 'Estado Despacho']) || 'ENTREGADO').toUpperCase() as any,
+          observaciones: String(getField(d, ['observaciones', 'notas', 'Observaciones']) || ''),
+          lineasJson: lineasJson,
+        };
+      });
     }
 
     return despachosLocales;

@@ -16,6 +16,7 @@ import { ModalRastreadorUniversal } from './ModalRastreadorUniversal';
 import { ModalCargaDPL } from './ModalCargaDPL';
 import { ModalImportarBackup } from './ModalImportarBackup';
 import { ModalEditarPedido } from './ModalEditarPedido';
+import { ModalImportarDespachos } from './ModalImportarDespachos';
 import { calcularKPIs, ejecutarMatchingFIFO } from '../../domain/services';
 import { CruceDPL } from './CruceDPL';
 import {
@@ -96,6 +97,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
   const [modalBackupAbierto, setModalBackupAbierto] = useState(false);
   const [modalEditarAbierto, setModalEditarAbierto] = useState(false);
+  const [modalImportarDespachosAbierto, setModalImportarDespachosAbierto] = useState(false);
   const [filaAEditar, setFilaAEditar] = useState<FilaRastreador | null>(null);
 
   // Estados reactivos de datos
@@ -1563,8 +1565,17 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
 
                 <div className="flex items-center gap-3 flex-wrap">
                   <button
+                    onClick={() => setModalImportarDespachosAbierto(true)}
+                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow-sm cursor-pointer border border-emerald-500"
+                    title="Importar historial de despachos desde archivo Excel o CSV (con sanitización automática de fechas y cantidades)"
+                  >
+                    <i className="fas fa-file-import text-emerald-100"></i>
+                    <span>📥 Importar Despachos (CSV / Excel)</span>
+                  </button>
+
+                  <button
                     onClick={handleDescargarManifiestoFisico}
-                    className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow-sm border border-slate-700"
+                    className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow-sm border border-slate-700 cursor-pointer"
                     title="Generar e imprimir Manifiesto Consolidado de Despachos Físicos para archivar en carpeta física de auditoría de CEDIS"
                   >
                     <i className="fas fa-print text-red-400"></i>
@@ -2617,6 +2628,17 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
           setFilaAEditar(null);
         }}
         onGuardadoExitoso={handleGuardadoEdicion}
+      />
+
+      {/* Modal Importar Historial de Despachos (Excel / CSV) */}
+      <ModalImportarDespachos
+        isOpen={modalImportarDespachosAbierto}
+        onClose={() => setModalImportarDespachosAbierto(false)}
+        onImportacionExitosa={(nuevosDespachos) => {
+          setDespachos(prev => [...nuevosDespachos, ...prev]);
+          notificar(`¡Historial de ${nuevosDespachos.length} despachos importado y sincronizado con éxito!`);
+          cargarDatos();
+        }}
       />
     </div>
   );
