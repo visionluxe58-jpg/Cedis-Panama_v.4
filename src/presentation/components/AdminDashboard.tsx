@@ -129,13 +129,26 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   // Estados de selección múltiple para eliminación y acciones en lote
   const [selectedLineas, setSelectedLineas] = useState<Set<string>>(new Set());
 
-  // Modal de Retiro en Mostrador CEDIS (Sin camiones de reparto)
+  // Modal de Entrega de Bodega y Traslado a Sucursal (Sin camiones ni choferes)
   const [modalRetiroAbierto, setModalRetiroAbierto] = useState<boolean>(false);
   const [lineaARetirar, setLineaARetirar] = useState<FilaRastreador | null>(null);
+  const [numeroTrasladoInput, setNumeroTrasladoInput] = useState<string>('');
   const [personaQueRetiraInput, setPersonaQueRetiraInput] = useState<string>('');
   const [cedulaPersonaInput, setCedulaPersonaInput] = useState<string>('');
   const [observacionesRetiroInput, setObservacionesRetiroInput] = useState<string>('');
   const [entregadorCedisInput, setEntregadorCedisInput] = useState<string>(auth.nombre || 'Bodega Central CEDIS');
+
+  // Memoria de nombres del personal de bodega que entrega (se aprenden y persisten automáticamente)
+  const [nombresBodegaGuardados, setNombresBodegaGuardados] = useState<string[]>(() => {
+    try {
+      const guardados = localStorage.getItem('cedis_nombres_bodega');
+      if (guardados) {
+        const parsed = JSON.parse(guardados);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return ['Joel P.', 'Edwin Blanco', 'Ulises Barria', 'Arquimedes Jordan', 'Edilson Uribe', 'Nivardo Gutiérrez', 'Leidys Perez'];
+  });
 
   // Modo de visualización en BD Encargados (tabla / tarjetas)
   const [vistaEncargadosModo, setVistaEncargadosModo] = useState<'tabla' | 'tarjetas'>('tabla');
@@ -389,53 +402,76 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     notificar(`Línea ${linea.codigoRepuesto} asignada en pallet ${pallet} (${ubicacion})`);
   };
 
-  // Abrir modal de Retiro en Mostrador CEDIS
+  // Abrir modal de Entrega de Bodega y Traslado a Sucursal
   const handleAbrirModalRetiro = (linea: FilaRastreador) => {
     setLineaARetirar(linea);
+    const anio = new Date().getFullYear().toString().slice(-2);
+    const correlativo = Math.floor(1000 + Math.random() * 9000);
+    setNumeroTrasladoInput(`TRA-${anio}${correlativo}`);
     setPersonaQueRetiraInput('');
     setCedulaPersonaInput('');
-    setEntregadorCedisInput(auth.nombre || 'Bodega Central CEDIS');
-    setObservacionesRetiroInput(`Retiro en mostrador CEDIS para orden ${linea.numeroOR || 'Stock'} - ${linea.cliente || 'Taller'}`);
+    setEntregadorCedisInput(auth.nombre || (nombresBodegaGuardados[0] || 'Bodega Central CEDIS'));
+    setObservacionesRetiroInput(`Entrega de bodega para traslado a ${linea.sucursal} - Orden: ${linea.numeroOR || 'Stock'} - Cliente: ${linea.cliente || 'Taller'}`);
     setModalRetiroAbierto(true);
   };
 
-  // Confirmar Retiro en Mostrador CEDIS y Descargar Acta PDF
+  // Confirmar Entrega de Bodega / Traslado a Sucursal y Descargar Comprobante PDF
   const handleConfirmarRetiroCedis = async () => {
     if (!lineaARetirar) return;
 
-    if (!personaQueRetiraInput.trim()) {
-      alert('Por favor ingrese el nombre del personal de la sucursal que retira el repuesto.');
+    const numTraslado = numeroTrasladoInput.trim();
+    if (!numTraslado) {
+      alert('Por favor ingrese el Número de Traslado.');
       return;
+    }
+
+    if (!personaQueRetiraInput.trim()) {
+      alert('Por favor ingrese el nombre del personal de la sucursal que recibe el repuesto.');
+      return;
+    }
+
+    const personaEntrega = entregadorCedisInput.trim() || auth.nombre || 'Bodega Central CEDIS';
+
+    // Aprender el nombre del personal de bodega automáticamente
+    if (personaEntrega && !nombresBodegaGuardados.includes(personaEntrega)) {
+      const nuevosNombres = [...nombresBodegaGuardados, personaEntrega];
+      setNombresBodegaGuardados(nuevosNombres);
+      try {
+        localStorage.setItem('cedis_nombres_bodega', JSON.stringify(nuevosNombres));
+      } catch (errLocal) {
+        console.warn('Error guardando nombre en bodega:', errLocal);
+      }
     }
 
     const actaId = `ACTA-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const fechaHora = new Date().toLocaleString('es-PA');
 
-    // 1. Descargar Acta oficial de Retiro en Mostrador CEDIS
+    // 1. Descargar Comprobante oficial de Entrega de Bodega y Traslado
     descargarActaRetiroCedis({
       numeroActa: actaId,
+      numeroTraslado: numTraslado,
       fecha: fechaHora,
       sucursalDestino: lineaARetirar.sucursal,
       personaQueRetira: personaQueRetiraInput.trim(),
       cedulaPersona: cedulaPersonaInput.trim() || 'N/A',
-      entregadorCedis: entregadorCedisInput.trim() || auth.nombre,
+      entregadorCedis: personaEntrega,
       observaciones: observacionesRetiroInput,
       lineas: [lineaARetirar],
     });
 
-    // 2. Actualizar en Supabase a Despachado / Retirado
+    // 2. Actualizar en Supabase a Despachado / Entregado
     await actualizarEstatusPedidoSupabase(lineaARetirar.lineaId, 'Despachado', {
       cantidadDespachada: lineaARetirar.cantidadSolicitada,
     });
 
-    // 3. Registrar en tabla de Despachos/Retiros
+    // 3. Registrar en tabla de Despachos/Traslados
     const nuevoRegistro: Omit<DespachoRegistro, 'id'> = {
-      numeroGuia: actaId,
+      numeroGuia: numTraslado,
       pedidoId: lineaARetirar.pedidoId,
       sucursalDestino: lineaARetirar.sucursal,
-      transportista: `Retiro Mostrador: ${personaQueRetiraInput.trim()} (Céd: ${cedulaPersonaInput.trim() || 'N/A'})`,
-      placaVehiculo: 'RETIRO EN CEDIS',
-      despachadorCedis: entregadorCedisInput.trim() || auth.nombre,
+      transportista: `Entregado: ${personaEntrega} | Recibido: ${personaQueRetiraInput.trim()}${cedulaPersonaInput.trim() ? ' (' + cedulaPersonaInput.trim() + ')' : ''}`,
+      placaVehiculo: 'TRASLADO BODEGA',
+      despachadorCedis: personaEntrega,
       fechaDespacho: new Date().toISOString().slice(0, 10),
       totalPiezas: Number(lineaARetirar.cantidadSolicitada) || 1,
       totalLineas: 1,
@@ -464,10 +500,10 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
 
     setModalRetiroAbierto(false);
     setLineaARetirar(null);
-    notificar(`¡Retiro confirmado! Acta ${actaId} generada y descargada.`);
+    notificar(`¡Entrega confirmada! Traslado ${numTraslado} registrado y comprobante PDF descargado.`);
   };
 
-  // Re-descargar Acta de Retiro desde la pestaña de Despachos/Retiros
+  // Re-descargar Comprobante de Traslado desde la pestaña de Despachos/Traslados
   const handleReDescargarActa = (d: DespachoRegistro) => {
     let lineasRecuperadas: FilaRastreador[] = [];
     try {
@@ -484,7 +520,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
           lineaId: 'LIN-REC',
           pedidoId: d.pedidoId,
           codigoRepuesto: 'REPUESTOS-VARIOS',
-          descripcionOficial: `Lote de ${d.totalPiezas} piezas retiradas por ${d.sucursalDestino}`,
+          descripcionOficial: `Lote de ${d.totalPiezas} piezas para traslado a ${d.sucursalDestino}`,
           cantidadSolicitada: d.totalPiezas,
           cantidadAsignada: d.totalPiezas,
           cantidadDespachada: d.totalPiezas,
@@ -505,15 +541,16 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
 
     descargarActaRetiroCedis({
       numeroActa: d.numeroGuia,
+      numeroTraslado: d.numeroGuia,
       fecha: d.fechaDespacho,
       sucursalDestino: d.sucursalDestino,
-      personaQueRetira: d.transportista.replace('Retiro Mostrador:', '').trim() || 'Personal Sucursal',
-      cedulaPersona: 'Verificada en mostrador',
+      personaQueRetira: d.transportista.replace(/^.*Recibido:\s*/i, '').replace(/^.*Recibe:\s*/i, '').replace('Retiro Mostrador:', '').trim() || 'Personal Sucursal',
+      cedulaPersona: 'Verificada en bodega',
       entregadorCedis: d.despachadorCedis,
       observaciones: d.observaciones,
       lineas: lineasRecuperadas,
     });
-    notificar(`Acta ${d.numeroGuia} re-descargada.`);
+    notificar(`Comprobante de Traslado ${d.numeroGuia} re-descargado.`);
   };
 
   // Guardar nueva ubicación en rack
@@ -764,8 +801,8 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
             numeroGuia: `ACTA-${f.pedidoId || f.lineaId}`,
             pedidoId: f.pedidoId,
             sucursalDestino: f.sucursal,
-            transportista: `Retiro Mostrador (${f.colaborador || 'Personal Sucursal'})`,
-            placaVehiculo: 'RETIRO EN CEDIS',
+            transportista: `Entregado Bodega | Recibe: ${f.colaborador || 'Personal Sucursal'}`,
+            placaVehiculo: 'TRASLADO BODEGA',
             despachadorCedis: 'Bodega Central CEDIS',
             fechaDespacho: new Date().toISOString().slice(0, 10),
             totalPiezas: f.cantidadDespachada || f.cantidadSolicitada || 1,
@@ -1011,8 +1048,8 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
-            <i className="fas fa-clipboard-check"></i>
-            <span>Retiro en Mostrador CEDIS / Despachos</span>
+            <i className="fas fa-dolly"></i>
+            <span>Entregas de Bodega / Traslados</span>
             <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-600 text-white">
               {despachosConsolidados.length}
             </span>
@@ -1489,10 +1526,10 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                                       <button
                                         onClick={() => handleAbrirModalRetiro(fila)}
                                         className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold text-[11px] transition-colors flex items-center gap-1 shadow-sm"
-                                        title="Registrar retiro en mostrador CEDIS por parte de la sucursal y generar Acta PDF"
+                                        title="Registrar entrega de bodega para traslado a sucursal y generar Comprobante PDF"
                                       >
-                                        <i className="fas fa-clipboard-check"></i>
-                                        <span>Retiro Mostrador</span>
+                                        <i className="fas fa-dolly"></i>
+                                        <span>Entregar de Bodega</span>
                                       </button>
                                     </>
                                   )}
@@ -1548,7 +1585,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
           )}
 
         {/* ========================================================================= */}
-        {/* VISTA 2: RETIRO EN MOSTRADOR CEDIS & ACTAS DE ENTREGA                     */}
+        {/* VISTA 2: ENTREGAS DE BODEGA & TRASLADOS A SUCURSALES                      */}
         {/* ========================================================================= */}
         {vistaActiva === 'despachos' && (
           <div className="space-y-6">
@@ -1556,11 +1593,11 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                    <i className="fas fa-clipboard-check text-emerald-600"></i>
-                    Control de Retiros en Mostrador CEDIS y Despachos Consolidados
+                    <i className="fas fa-dolly text-emerald-600"></i>
+                    Control de Entregas de Bodega y Traslados a Sucursales
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    Historial oficial consolidado de repuestos especiales ya despachados o retirados presencialmente por asesores y personal en Bodega Central.
+                    Historial oficial consolidado de repuestos entregados en Bodega Central CEDIS para traslado interno a sucursales (Sin camiones de reparto).
                   </p>
                 </div>
 
@@ -1577,20 +1614,20 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                   <button
                     onClick={handleDescargarManifiestoFisico}
                     className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow-sm border border-slate-700 cursor-pointer"
-                    title="Generar e imprimir Manifiesto Consolidado de Despachos Físicos para archivar en carpeta física de auditoría de CEDIS"
+                    title="Generar e imprimir Manifiesto Consolidado de Traslados Físicos para archivar en carpeta de auditoría de CEDIS"
                   >
                     <i className="fas fa-print text-red-400"></i>
                     <span>📑 Manifiesto Archivo Físico (PDF)</span>
                   </button>
 
                   <span className="text-xs font-bold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 hidden sm:inline-block">
-                    Total Despachados: {despachosConsolidados.length}
+                    Total Traslados: {despachosConsolidados.length}
                   </span>
                   <div className="relative">
                     <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                     <input
                       type="text"
-                      placeholder="Buscar por acta, pedido, repuesto, sucursal..."
+                      placeholder="Buscar por traslado, acta, pedido, repuesto, sucursal..."
                       value={busquedaDespacho}
                       onChange={e => setBusquedaDespacho(e.target.value)}
                       className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 w-64"
@@ -1599,27 +1636,27 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 </div>
               </div>
 
-              {/* Tabla de Retiros */}
+              {/* Tabla de Entregas y Traslados */}
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="bg-slate-100 text-slate-600 font-bold uppercase tracking-wider text-[11px] border-b border-slate-200">
-                      <th className="py-3 px-4">No. Acta / Folio</th>
+                      <th className="py-3 px-4">No. Traslado / Acta</th>
                       <th className="py-3 px-4">Pedido / OR</th>
                       <th className="py-3 px-4">Repuesto / Detalle</th>
-                      <th className="py-3 px-4">Sucursal Retiro</th>
-                      <th className="py-3 px-4">Personal que Retiró</th>
+                      <th className="py-3 px-4">Sucursal Destino</th>
+                      <th className="py-3 px-4">Personal Entrega / Recibe</th>
                       <th className="py-3 px-4 text-center">Piezas</th>
                       <th className="py-3 px-4 text-center">Estado</th>
-                      <th className="py-3 px-4 text-right">Acta Oficial</th>
+                      <th className="py-3 px-4 text-right">Comprobante Oficial</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     {despachosFiltrados.length === 0 ? (
                       <tr>
                         <td colSpan={8} className="py-12 text-center text-slate-400">
-                          <i className="fas fa-clipboard text-3xl mb-2 block text-slate-300"></i>
-                          No hay registros de retiros que coincidan con la búsqueda. Puedes usar "⚡ Analizar y Depurar Matriz" en Gestión de Pedidos para organizar repuestos despachados.
+                          <i className="fas fa-dolly text-3xl mb-2 block text-slate-300"></i>
+                          No hay registros de traslados que coincidan con la búsqueda. Puedes usar "⚡ Analizar y Depurar Matriz" en Gestión de Pedidos para organizar repuestos entregados.
                         </td>
                       </tr>
                     ) : (
@@ -1642,7 +1679,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                             <td className="py-3 px-4 font-mono font-bold text-red-700">
                               <span className="block">{d.numeroGuia}</span>
                               <span className="text-[10px] text-slate-400 font-normal">
-                                {d.id.startsWith('DSP-AUTO') || d.id.startsWith('DSP-LIN') ? 'Desde Matriz' : 'Acta en Mostrador'}
+                                {d.id.startsWith('DSP-AUTO') || d.id.startsWith('DSP-LIN') ? 'Desde Matriz' : 'Entrega Bodega'}
                               </span>
                             </td>
                             <td className="py-3 px-4 font-mono">
@@ -1650,7 +1687,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                             </td>
                             <td className="py-3 px-4 max-w-xs">
                               <div className="font-semibold text-slate-800 text-xs truncate" title={repuestoInfo}>
-                                {repuestoInfo || 'Repuestos retirados de bodega'}
+                                {repuestoInfo || 'Repuestos entregados en bodega'}
                               </div>
                               {d.observaciones && (
                                 <div className="text-[10px] text-slate-400 truncate" title={d.observaciones}>
@@ -1674,10 +1711,10 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                                 <button
                                   onClick={() => handleReDescargarActa(d)}
                                   className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded font-semibold text-xs transition-colors flex items-center gap-1 shadow-sm"
-                                  title="Descargar Acta de Retiro en Mostrador"
+                                  title="Descargar Comprobante Oficial de Traslado y Entrega"
                                 >
                                   <i className="fas fa-file-pdf"></i>
-                                  <span>Acta PDF</span>
+                                  <span>Comprobante PDF</span>
                                 </button>
                                 <button
                                   onClick={() => descargarComprobanteSalidaFisica(d)}
@@ -2435,19 +2472,19 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       </main>
 
       {/* ========================================================================= */}
-      {/* MODAL DE CONFIRMACIÓN DE RETIRO EN MOSTRADOR CEDIS & ACTA PDF              */}
+      {/* MODAL DE ENTREGA DE BODEGA & TRASLADO A SUCURSAL (COMPROBANTE PDF)         */}
       {/* ========================================================================= */}
       {modalRetiroAbierto && lineaARetirar && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center text-lg">
-                  <i className="fas fa-clipboard-check"></i>
+                <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-lg">
+                  <i className="fas fa-dolly"></i>
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 text-base">Acta de Retiro en Mostrador CEDIS</h3>
-                  <p className="text-xs text-slate-500">Entrega presencial en Bodega Central (Sin camión)</p>
+                  <h3 className="font-bold text-slate-900 text-base">Comprobante de Entrega de Bodega y Traslado</h3>
+                  <p className="text-xs text-slate-500">Entrega en Bodega Central CEDIS para traslado interno a sucursales</p>
                 </div>
               </div>
               <button
@@ -2458,14 +2495,14 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
               </button>
             </div>
 
-            {/* Resumen del Repuesto a Retirar */}
+            {/* Resumen del Repuesto a Entregar */}
             <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 mb-4 text-xs space-y-1.5">
               <div className="flex justify-between">
                 <span className="text-slate-500">Pedido ID / Folio:</span>
-                <span className="font-mono font-bold">{lineaARetirar.pedidoId}</span>
+                <span className="font-mono font-bold text-slate-900">{lineaARetirar.pedidoId}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">Sucursal que Retira:</span>
+                <span className="text-slate-500">Sucursal Destino:</span>
                 <span className="font-bold text-red-700">{lineaARetirar.sucursal}</span>
               </div>
               <div className="flex justify-between">
@@ -2479,25 +2516,87 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
               </div>
             </div>
 
-            {/* Formulario de Retiro */}
-            <div className="space-y-3 mb-6">
+            {/* Formulario de Entrega de Bodega y Traslado */}
+            <div className="space-y-3.5 mb-6">
+              {/* Número de Traslado */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Nombre del Personal que Retira (Sucursal) *
+                  Número de Traslado *
+                </label>
+                <input
+                  type="text"
+                  value={numeroTrasladoInput}
+                  onChange={e => setNumeroTrasladoInput(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 font-mono font-bold text-red-700 bg-red-50/30 uppercase"
+                  placeholder="Ej: TRA-261234"
+                  autoFocus
+                />
+                <p className="text-[10px] text-slate-400 mt-0.5">Identificador de movimiento o guía de traslado interno.</p>
+              </div>
+
+              {/* Entregado por de Bodega (con aprendizaje y memoria persistente) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Entregado por (Bodega) *
+                </label>
+                <input
+                  type="text"
+                  list="nombres-bodega-datalist"
+                  value={entregadorCedisInput}
+                  onChange={e => setEntregadorCedisInput(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-800"
+                  placeholder="Nombre de quien entrega en bodega..."
+                />
+                <datalist id="nombres-bodega-datalist">
+                  {nombresBodegaGuardados.map(n => (
+                    <option key={n} value={n} />
+                  ))}
+                </datalist>
+
+                {/* Badges de selección rápida del personal recordado */}
+                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                  <span className="text-[10px] text-slate-400 font-semibold mr-0.5">
+                    <i className="fas fa-users text-slate-400 mr-1"></i>Personal:
+                  </span>
+                  {nombresBodegaGuardados.map(n => (
+                    <button
+                      type="button"
+                      key={n}
+                      onClick={() => setEntregadorCedisInput(n)}
+                      className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-all border cursor-pointer ${
+                        entregadorCedisInput === n
+                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  <i className="fas fa-brain text-emerald-500 mr-1"></i>
+                  El sistema aprende y recuerda automáticamente cualquier nombre nuevo ingresado.
+                </p>
+              </div>
+
+              {/* Recibido por (Sucursal) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Recibido por (Sucursal) *
                 </label>
                 <input
                   type="text"
                   value={personaQueRetiraInput}
                   onChange={e => setPersonaQueRetiraInput(e.target.value)}
                   className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
-                  placeholder="Ej: Carlos Vega (Chofer / Mensajero de Sucursal)"
-                  autoFocus
+                  placeholder="Ej: Carlos Vega (Asesor / Sucursal David)"
                 />
               </div>
 
+              {/* Cédula / Documento de Identidad */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Cédula / Documento de Identidad
+                  Cédula / Documento de Identidad (Opcional)
                 </label>
                 <input
                   type="text"
@@ -2508,18 +2607,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Entregado por (Bodega Central CEDIS)
-                </label>
-                <input
-                  type="text"
-                  value={entregadorCedisInput}
-                  onChange={e => setEntregadorCedisInput(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium bg-slate-50"
-                />
-              </div>
-
+              {/* Observaciones */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
                   Observaciones / Inspección Física
@@ -2529,7 +2617,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                   onChange={e => setObservacionesRetiroInput(e.target.value)}
                   rows={2}
                   className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="Mercancía revisada físicamente por la persona que retira..."
+                  placeholder="Mercancía verificada físicamente antes de salir de bodega CEDIS..."
                 />
               </div>
             </div>
@@ -2538,17 +2626,17 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
               <button
                 onClick={() => setModalRetiroAbierto(false)}
-                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
               >
                 Cancelar
               </button>
 
               <button
                 onClick={handleConfirmarRetiroCedis}
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-md flex items-center gap-2"
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-md flex items-center gap-2 cursor-pointer"
               >
-                <i className="fas fa-clipboard-check"></i>
-                <span>Confirmar Entrega y Descargar Acta PDF</span>
+                <i className="fas fa-file-invoice text-emerald-100"></i>
+                <span>Confirmar Entrega y Descargar Comprobante PDF</span>
               </button>
             </div>
           </div>

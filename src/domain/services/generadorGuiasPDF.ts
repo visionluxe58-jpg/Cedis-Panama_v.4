@@ -13,11 +13,12 @@ import type { FilaRastreador, DespachoRegistro } from '../models/types';
 
 export interface DatosRetiroCedis {
   numeroActa: string;
+  numeroTraslado?: string; // Número de Traslado solicitado
   fecha: string;
   sucursalDestino: string;
   personaQueRetira: string;
   cedulaPersona: string;
-  entregadorCedis: string;
+  entregadorCedis: string; // Entregado por (Bodega)
   observaciones?: string;
   lineas: FilaRastreador[];
 }
@@ -237,8 +238,8 @@ export function generarEtiquetaPedidoEspecialPDF(linea: FilaRastreador): jsPDF {
 }
 
 /**
- * 2. ACTA OFICIAL DE RETIRO EN MOSTRADOR CEDIS (Formato A4)
- * Para cuando la sucursal viene a retirar sus pedidos directamente al CEDIS
+ * 2. COMPROBANTE OFICIAL DE ENTREGA DE BODEGA Y TRASLADO (Formato A4)
+ * Registro directo de entrega desde bodega CEDIS para traslado entre sucursales (Sin camiones propios)
  */
 export function generarActaRetiroCedisPDF(datos: DatosRetiroCedis): jsPDF {
   const doc = new jsPDF({
@@ -247,34 +248,34 @@ export function generarActaRetiroCedisPDF(datos: DatosRetiroCedis): jsPDF {
     format: 'a4',
   });
 
-  // Encabezado
+  // Encabezado Corporativo
   doc.setFillColor(185, 28, 28);
   doc.rect(0, 0, 210, 26, 'F');
 
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
-  doc.text('CHANGAN MOTORS PANAMÁ - CEDIS CENTRAL', 14, 11);
+  doc.text('CHANGAN AUTO PANAMA - CEDIS CENTRAL', 14, 11);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  doc.text('Acta Oficial de Entrega y Retiro de Repuestos en Mostrador de Bodega Central', 14, 18);
+  doc.text('Comprobante Oficial de Entrega de Bodega y Traslado a Sucursales', 14, 18);
 
-  // Recuadro de Número de Acta
+  // Recuadro de Número de Traslado / Comprobante
   doc.setFillColor(255, 255, 255);
-  doc.roundedRect(140, 6, 56, 14, 2, 2, 'F');
+  doc.roundedRect(136, 6, 60, 14, 2, 2, 'F');
   doc.setTextColor(185, 28, 28);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.text('ACTA DE RETIRO EN CEDIS', 142, 11);
-  doc.setFontSize(10);
-  doc.text(datos.numeroActa, 142, 16);
+  doc.setFontSize(7.5);
+  doc.text('N° DE TRASLADO / COMPROBANTE', 138, 11);
+  doc.setFontSize(9.5);
+  doc.text(datos.numeroTraslado || datos.numeroActa, 138, 16);
 
-  // Datos Generales
+  // Datos Generales de la Entrega y Traslado
   doc.setTextColor(30, 41, 59);
   doc.setFontSize(9);
   doc.setFont('helvetica', 'bold');
-  doc.text('DATOS DE LA ENTREGA EN MOSTRADOR CEDIS', 14, 33);
+  doc.text('DATOS DE ENTREGA DE BODEGA Y TRASLADO A SUCURSAL', 14, 33);
   doc.setDrawColor(203, 213, 225);
   doc.line(14, 35, 196, 35);
 
@@ -284,12 +285,12 @@ export function generarActaRetiroCedisPDF(datos: DatosRetiroCedis): jsPDF {
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
-  doc.text('Lugar de Retiro:', 18, 44);
-  doc.text('Sucursal Receptora:', 18, 51);
+  doc.text('Tipo de Movimiento:', 18, 44);
+  doc.text('Sucursal Destino:', 18, 51);
   doc.text('Fecha y Hora:', 18, 58);
 
   doc.setFont('helvetica', 'normal');
-  doc.text('Mostrador Central CEDIS Changan Panamá', 52, 44);
+  doc.text('Entrega interna de bodega y traslado entre sucursales', 52, 44);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(185, 28, 28);
   doc.text(`Sucursal ${datos.sucursalDestino}`, 52, 51);
@@ -298,19 +299,21 @@ export function generarActaRetiroCedisPDF(datos: DatosRetiroCedis): jsPDF {
   doc.text(datos.fecha, 52, 58);
 
   doc.setFont('helvetica', 'bold');
-  doc.text('Personal que Retira:', 115, 44);
-  doc.text('Cédula / Documento:', 115, 51);
-  doc.text('Entregado por (CEDIS):', 115, 58);
+  doc.text('N° de Traslado:', 115, 44);
+  doc.text('Entregado por (Bodega):', 115, 51);
+  doc.text('Recibido por (Sucursal):', 115, 58);
 
   doc.setFont('helvetica', 'bold');
-  doc.text(datos.personaQueRetira || 'Personal de Sucursal', 152, 44);
+  doc.setTextColor(185, 28, 28);
+  doc.text(datos.numeroTraslado || datos.numeroActa, 152, 44);
+  doc.setTextColor(30, 41, 59);
+  doc.text(datos.entregadorCedis || 'Bodega Central CEDIS', 152, 51);
   doc.setFont('helvetica', 'normal');
-  doc.text(datos.cedulaPersona || 'N/A', 152, 51);
-  doc.text(datos.entregadorCedis || 'Bodeguero CEDIS', 152, 58);
+  doc.text(`${datos.personaQueRetira || 'Personal de Sucursal'}${datos.cedulaPersona && datos.cedulaPersona !== 'N/A' ? ' (' + datos.cedulaPersona + ')' : ''}`, 152, 58);
 
   doc.setFontSize(7.5);
   doc.setTextColor(100, 116, 139);
-  doc.text('Modalidad: Retiro directo en mostrador CEDIS (Sin flete/camión externo).', 18, 66);
+  doc.text('Nota: Entrega directa de repuestos efectuada en bodega central para traslado a sucursal.', 18, 66);
 
   // Tabla de Piezas
   const tableData = datos.lineas.map((linea, index) => [
@@ -379,46 +382,46 @@ export function generarActaRetiroCedisPDF(datos: DatosRetiroCedis): jsPDF {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.text(`Total Piezas Entregadas: ${totalPiezas} unidades`, 18, finalY + 6);
-  doc.text(`Estado: RETIRADO EN MOSTRADOR`, 130, finalY + 6);
+  doc.text(`Estado: ENTREGADO EN BODEGA / EN TRASLADO`, 120, finalY + 6);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.text(
-    `Observaciones: ${datos.observaciones || 'Mercancía revisada físicamente por la persona que retira antes de salir del CEDIS.'}`,
+    `Observaciones: ${datos.observaciones || 'Mercancía verificada físicamente antes de salir de bodega CEDIS para su traslado.'}`,
     18,
     finalY + 12
   );
 
-  // Firmas de Entrega y Retiro
+  // Firmas de Entrega de Bodega y Traslado
   const signY = Math.min(finalY + 28, 245);
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
-  doc.text('FIRMAS DE CONFORMIDAD DE ENTREGA Y RETIRO', 14, signY - 4);
+  doc.text('FIRMAS DE CONFORMIDAD DE ENTREGA DE BODEGA Y TRASLADO', 14, signY - 4);
   doc.line(14, signY - 2, 196, signY - 2);
 
-  // Firma 1: Entrega CEDIS
+  // Firma 1: Entregado por (Bodega)
   doc.line(25, signY + 24, 85, signY + 24);
   doc.setFontSize(7.5);
   doc.text('Entregado por (Bodega Central CEDIS)', 28, signY + 28);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7);
-  doc.text(datos.entregadorCedis || 'Bodeguero / Despachador', 28, signY + 32);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.text(datos.entregadorCedis || 'Personal de Bodega', 28, signY + 33);
 
-  // Firma 2: Retira Sucursal
+  // Firma 2: Recibido por (Sucursal Receptora)
   doc.line(125, signY + 24, 185, signY + 24);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
-  doc.text('Recibido Conforme (Personal Sucursal)', 128, signY + 28);
+  doc.text('Recibido Conforme (Sucursal Receptora)', 128, signY + 28);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
-  doc.text(`${datos.personaQueRetira || 'Nombre'} - Céd: ${datos.cedulaPersona || 'N/A'}`, 128, signY + 32);
+  doc.text(`${datos.personaQueRetira || 'Personal de Sucursal'}${datos.cedulaPersona && datos.cedulaPersona !== 'N/A' ? ' - Céd: ' + datos.cedulaPersona : ''}`, 128, signY + 33);
 
   // Pie de página
   doc.setFontSize(6.5);
   doc.setTextColor(148, 163, 184);
   doc.text(
-    'CEDIS Changan Panamá - Acta de entrega y retiro físico de repuestos especiales.',
+    'Changan Auto Panama - Comprobante oficial de entrega de bodega y traslado entre sucursales.',
     14,
     288
   );
@@ -447,11 +450,12 @@ export function descargarEtiquetasEnLote(lineas: FilaRastreador[]): void {
 }
 
 /**
- * Descarga el Acta de Retiro en Mostrador CEDIS
+ * Descarga el Comprobante Oficial de Entrega de Bodega y Traslado a Sucursales
  */
 export function descargarActaRetiroCedis(datos: DatosRetiroCedis): void {
   const doc = generarActaRetiroCedisPDF(datos);
-  const nombre = `${datos.numeroActa}_${datos.sucursalDestino.replace(/\s+/g, '_')}.pdf`;
+  const identificador = (datos.numeroTraslado || datos.numeroActa || 'TRASLADO').replace(/[\/\\]/g, '-');
+  const nombre = `TRASLADO_${identificador}_${datos.sucursalDestino.replace(/\s+/g, '_')}.pdf`;
   doc.save(nombre);
 }
 
@@ -481,11 +485,11 @@ export function generarManifiestoArchivoFisicoPDF(
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(15);
-  doc.text('CHANGAN MOTORS PANAMÁ - CENTRO CENTRAL DE DISTRIBUCIÓN (CEDIS)', 14, 11);
+  doc.text('CHANGAN AUTO PANAMA - CENTRO CENTRAL DE DISTRIBUCIÓN (CEDIS)', 14, 11);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  doc.text('MANIFIESTO OFICIAL DE CONTROL DE DESPACHOS Y RETIROS FÍSICOS // CARPETA DE AUDITORÍA', 14, 18);
+  doc.text('MANIFIESTO OFICIAL DE CONTROL DE ENTREGAS DE BODEGA Y TRASLADOS // ARCHIVO DE AUDITORÍA', 14, 18);
 
   // Recuadro Resumen
   doc.setFillColor(248, 250, 252);
@@ -506,10 +510,10 @@ export function generarManifiestoArchivoFisicoPDF(
   doc.text(fechaGeneracion, 60, 39);
 
   doc.setFont('helvetica', 'bold');
-  doc.text('TOTAL DESPACHOS REGISTRADOS:', 180, 36);
+  doc.text('TOTAL TRASLADOS REGISTRADOS:', 180, 36);
   doc.setTextColor(185, 28, 28);
   doc.setFontSize(11);
-  doc.text(`${despachos.length} retiros`, 245, 36);
+  doc.text(`${despachos.length} entregas`, 245, 36);
 
   // Preparar Filas para autoTable
   const bodyRows = despachos.map((d, idx) => {
@@ -532,7 +536,7 @@ export function generarManifiestoArchivoFisicoPDF(
       d.fechaDespacho,
       d.pedidoId,
       d.sucursalDestino,
-      repuestoDetalle || 'Repuestos de Mostrador',
+      repuestoDetalle || 'Repuestos de Bodega',
       String(d.totalPiezas || 1),
       d.transportista || 'Personal Sucursal',
       '________________',
@@ -543,13 +547,13 @@ export function generarManifiestoArchivoFisicoPDF(
     startY: 46,
     head: [[
       '#',
-      'No. Acta / Folio',
+      'No. Traslado / Acta',
       'Fecha',
       'Pedido / OR',
-      'Sucursal Retiro',
+      'Sucursal Destino',
       'Repuesto / Detalle Oficial',
       'Cant.',
-      'Personal que Retiró',
+      'Personal Entrega / Recibe',
       'Firma Conforme',
     ]],
     body: bodyRows,
@@ -674,10 +678,11 @@ export function generarComprobanteSalidaFisicaPDF(d: DespachoRegistro): jsPDF {
 
   return generarActaRetiroCedisPDF({
     numeroActa: d.numeroGuia,
+    numeroTraslado: d.numeroGuia,
     fecha: d.fechaDespacho,
     sucursalDestino: d.sucursalDestino,
-    personaQueRetira: d.transportista.replace('Retiro Mostrador:', '').trim() || 'Personal de Sucursal',
-    cedulaPersona: 'Verificada en Mostrador',
+    personaQueRetira: d.transportista.replace(/^.*Recibido:\s*/i, '').replace(/^.*Recibe:\s*/i, '').replace('Retiro Mostrador:', '').trim() || 'Personal de Sucursal',
+    cedulaPersona: 'Verificada en Bodega',
     entregadorCedis: d.despachadorCedis,
     observaciones: d.observaciones,
     lineas: lineasRecuperadas,
