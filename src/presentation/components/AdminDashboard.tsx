@@ -14,6 +14,7 @@ import type {
 } from '../../domain/models/types';
 import { ModalRastreadorUniversal } from './ModalRastreadorUniversal';
 import { ModalCargaDPL } from './ModalCargaDPL';
+import { ModalImportarBackup } from './ModalImportarBackup';
 import { calcularKPIs, ejecutarMatchingFIFO } from '../../domain/services';
 import { CruceDPL } from './CruceDPL';
 import {
@@ -91,6 +92,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
   const [modalRastreadorAbierto, setModalRastreadorAbierto] = useState(false);
   const [codigoInicial, setCodigoInicial] = useState('');
   const [modalDPLAbierto, setModalDPLAbierto] = useState(false);
+  const [modalBackupAbierto, setModalBackupAbierto] = useState(false);
 
   // Estados reactivos de datos
   const [filas, setFilas] = useState<FilaRastreador[]>(DEMO_FILAS);
@@ -1070,8 +1072,17 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                     </p>
                   </div>
 
-                  {/* Acciones de exportación y depuración */}
+                  {/* Acciones de exportación, importación y depuración */}
                   <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => setModalBackupAbierto(true)}
+                      className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 border border-emerald-800/30 cursor-pointer"
+                      title="Importa pedidos históricos desde un archivo Excel (.xlsx/.xls) o CSV de respaldo con normalización automática a Supabase"
+                    >
+                      <i className="fas fa-file-excel text-emerald-200"></i>
+                      <span>📥 Importar Backup (Excel/CSV)</span>
+                    </button>
+
                     <button
                       onClick={handleAnalizarYDepurar}
                       disabled={depurandoMatriz}
@@ -2450,6 +2461,16 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         isOpen={modalDPLAbierto}
         onClose={() => setModalDPLAbierto(false)}
         onDPLCargado={handleDPLCargado}
+      />
+
+      {/* Modal Importar Backup (Excel / CSV / Portapapeles) */}
+      <ModalImportarBackup
+        isOpen={modalBackupAbierto}
+        onClose={() => setModalBackupAbierto(false)}
+        onImportacionExitosa={(totalLineas, pedidosUnicos) => {
+          cargarDatos(true);
+          notificar(`¡Backup importado con éxito! ${totalLineas} repuestos en ${pedidosUnicos} pedidos.`);
+        }}
       />
     </div>
   );

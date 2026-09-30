@@ -260,6 +260,89 @@ export async function guardarPedidoSupabase(payload: {
 }
 
 /**
+ * Importa en lote una colección de pedidos de backup hacia Supabase y memoria local
+ */
+export async function importarFilasBackupSupabase(
+  filas: FilaRastreador[],
+  onProgress?: (porcentaje: number) => void
+): Promise<{ ok: boolean; totalInsertadas: number; pedidosUnicos: number; error?: string }> {
+  if (!filas || filas.length === 0) {
+    return { ok: true, totalInsertadas: 0, pedidosUnicos: 0 };
+  }
+
+  const pedidosSet = new Set<string>();
+  const payloadToInsert = filas.map(f => {
+    pedidosSet.add(f.pedidoId);
+    return {
+      pedido_id: f.pedidoId,
+      tipo_pedido: 'Pedido Especial Taller / Backup',
+      fecha_creacion: (f as any).fechaOriginal || new Date().toISOString().replace('T', ' ').slice(0, 19),
+      sucursal: f.sucursal,
+      colaborador: f.colaborador,
+      cliente: f.cliente,
+      modelo_changan: f.modeloChangan,
+      vin: f.vin,
+      cotizacion_numero_or: f.numeroOR,
+      codigo_repuesto: f.codigoRepuesto,
+      descripcion_oficial: f.descripcionOficial,
+      cantidad_solicitada: f.cantidadSolicitada || 1,
+      cantidad_asignada: f.cantidadAsignada || 0,
+      cantidad_despachada: f.cantidadDespachada || 0,
+      estatus_linea: f.estatusLinea || 'Pendiente',
+      contenedor_asignado: f.contenedorAsignado || '',
+      pallet_asignado: f.palletAsignado || '',
+      package_no: f.packageNo || '',
+      ubicacion_cedis: f.ubicacionCedis || '',
+      motivo: 'Carga Histórica Backup',
+      transporte: 'Aereo',
+    };
+  });
+
+  // 1. Guardar en memoria local primero (garantiza persistencia inmediata en frontend)
+  try {
+    const rawLocal = localStorage.getItem('cedis_filas_admin');
+    const locales: any[] = rawLocal ? JSON.parse(rawLocal) : [];
+    const mapaLocales = new Map<string, any>();
+    locales.forEach(l => mapaLocales.set(`${l.pedidoId}_${l.codigoRepuesto}`, l));
+    filas.forEach(f => mapaLocales.set(`${f.pedidoId}_${f.codigoRepuesto}`, f));
+    localStorage.setItem('cedis_filas_admin', JSON.stringify(Array.from(mapaLocales.values())));
+  } catch (e) {
+    console.warn('Error guardando backup en localStorage:', e);
+  }
+
+  // 2. Insertar en Supabase en lotes de 50 filas
+  if (isSupabaseConfigured()) {
+    const CHUNK_SIZE = 50;
+    let procesadas = 0;
+
+    for (let i = 0; i < payloadToInsert.length; i += CHUNK_SIZE) {
+      const chunk = payloadToInsert.slice(i, i + CHUNK_SIZE);
+      let { error } = await supabase.from('matriz_pedidos').insert(chunk);
+
+      if (error && (error.message.includes('relation') || error.message.includes('does not exist'))) {
+        const respCentral = await supabase.from('matriz_central').insert(chunk);
+        if (respCentral.error) {
+          console.error('Error insertando lote en matriz_central:', respCentral.error);
+        }
+      }
+
+      procesadas += chunk.length;
+      if (onProgress) {
+        onProgress(Math.round((procesadas / payloadToInsert.length) * 100));
+      }
+    }
+  } else {
+    if (onProgress) onProgress(100);
+  }
+
+  return {
+    ok: true,
+    totalInsertadas: payloadToInsert.length,
+    pedidosUnicos: pedidosSet.size,
+  };
+}
+
+/**
  * Listas maestras de candidatos de columnas para tolerar cualquier variación de nombre en Supabase,
  * Google Sheets, importaciones CSV y sistemas ERP/SAP
  */
