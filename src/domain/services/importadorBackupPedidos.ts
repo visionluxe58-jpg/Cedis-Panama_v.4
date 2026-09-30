@@ -101,14 +101,19 @@ export function normalizarModeloChangan(raw: string): string {
 }
 
 /**
- * Normaliza fechas variadas (DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, YYYY-MM-DD o Excel serial)
+ * Normaliza fechas variadas (DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, YYYY-MM-DD o Excel serial o Date)
  */
 export function normalizarFecha(raw: any): string {
   if (!raw) return new Date().toISOString().slice(0, 10);
 
-  // Si viene como número serial de Excel (ej: 45544)
-  if (typeof raw === 'number' && raw > 30000 && raw < 70000) {
-    const date = new Date(Math.round((raw - 25569) * 86400 * 1000));
+  if (raw instanceof Date) {
+    return raw.toISOString().slice(0, 10);
+  }
+
+  // Si viene como número serial de Excel (ej: 45544 o 46273.999)
+  const numSerial = typeof raw === 'number' ? raw : (typeof raw === 'string' && !isNaN(Number(raw)) && Number(raw) > 30000 && Number(raw) < 70000 ? Number(raw) : null);
+  if (numSerial !== null) {
+    const date = new Date(Math.round((numSerial - 25569) * 86400 * 1000));
     return date.toISOString().slice(0, 10);
   }
 
@@ -152,6 +157,25 @@ export function normalizarFecha(raw: any): string {
 }
 
 /**
+ * Normaliza y repara texto con codificaciones mixtas o mojibake (ej: UTF-8 interpretado como Latin-1)
+ */
+export function limpiarTextoTolerante(str: any): string {
+  if (!str) return '';
+  return String(str)
+    .replace(/Ã¡/g, 'a')
+    .replace(/Ã©/g, 'e')
+    .replace(/Ã­/g, 'i')
+    .replace(/Ã³/g, 'o')
+    .replace(/Ãº/g, 'u')
+    .replace(/Ã±/g, 'n')
+    .replace(/Ã/g, 'a')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
  * Analiza una matriz cruda de datos (de Excel o CSV) y mapea las columnas
  */
 export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacionBackup {
@@ -169,17 +193,11 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
     };
   }
 
-  // 1. Detectar índices de encabezados en la primera fila
-  const headerRow = matrizCruda[0].map((h: any) =>
-    String(h || '')
-      .toLowerCase()
-      .trim()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '') // Quitar tildes para búsqueda flexible
-  );
+  // 1. Detectar índices de encabezados en la primera fila con tolerancia a mojibake y tildes
+  const headerRow = matrizCruda[0].map((h: any) => limpiarTextoTolerante(h));
 
   const findCol = (keywords: string[]) => {
-    return headerRow.findIndex(h => keywords.some(k => h.includes(k)));
+    return headerRow.findIndex(h => keywords.some(k => h.includes(limpiarTextoTolerante(k))));
   };
 
   const idxFecha = findCol(['fecha', 'date', 'dia']);
@@ -188,11 +206,35 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
   const idxCliente = findCol(['cliente', 'propietario', 'aseguradora', 'nombre']);
   const idxPlaca = findCol(['placa', 'matricula', 'plate']);
   const idxModelo = findCol(['modelo', 'vehiculo', 'auto', 'linea']);
-  const idxCotizacion = findCol(['cotizacion', 'cotiz', 'c.o.', 'presupuesto']);
+  const idxCotizacion = findCol(['cotizacion', 'cotiz', 'c.o.', 'c.o', 'co', 'presupuesto']);
   const idxOT = findCol(['ot', 'orden de trabajo', 'orden taller', 'caso taller', 'chapisteria']);
-  const idxCodigo = findCol(['codigo oem', 'codigo', 'part number', 'no. parte', 'item', 'referencia', 'parte']);
-  const idxDesc = findCol(['descripcion', 'nombre repuesto', 'detalle', 'repuesto']);
-  const idxCant = findCol(['cant', 'cantidad', 'qty', 'unidades', 'piezas']);
+  let idxCodigo = findCol(['codigo oem', 'codigo', 'cod', 'oem', 'part number', 'partnumber', 'no. parte', 'no parte', 'item', 'referencia', 'parte', 'repuesto']);
+  let idxDesc = findCol(['descripcion', 'descrip', 'desc', 'nombre repuesto', 'detalle', 'articulo', 'producto']);
+  const idxCant = findCol(['cant. solicitada', 'cantidad solicitada', 'cant', 'cantidad', 'qty', 'unidades', 'piezas']);
+
+  // Respaldo heurístico inteligente si los nombres de columna son completamente desconocidos:
+  if (idxCodigo === -1 && matrizCruda.length > 1) {
+    // Buscar la columna con códigos alfanuméricos tipo Changan (ej: F202F280503-0702-AA, S111F240101-0204, etc.)
+    for (let c = 0; c < (matrizCruda[1]?.length || 0); c++) {
+      const val = String(matrizCruda[1][c] || '').trim();
+      if (/^[A-Z0-9]{3,}-[A-Z0-9-]{2,}/i.test(val) || (val.length >= 6 && /[A-Z]/.test(val) && /[0-9]/.test(val))) {
+        idxCodigo = c;
+        break;
+      }
+    }
+  }
+
+  if (idxDesc === -1 && matrizCruda.length > 1) {
+    // Buscar columna de texto descriptivo que no sea la de código ni cliente
+    for (let c = 0; c < (matrizCruda[1]?.length || 0); c++) {
+      if (c === idxCodigo || c === idxCliente || c === idxAsesor) continue;
+      const val = String(matrizCruda[1][c] || '').trim();
+      if (val.length > 8 && /[a-z]/i.test(val) && !/^\d+$/.test(val)) {
+        idxDesc = c;
+        break;
+      }
+    }
+  }
 
   const advertenciasGlobales: string[] = [];
   if (idxCodigo === -1) {
@@ -383,11 +425,21 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
 export async function parsearArchivoBackupExcel(file: File): Promise<ResultadoImportacionBackup> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    const esCSV = file.name.toLowerCase().endsWith('.csv') || file.type === 'text/csv';
 
     reader.onload = e => {
       try {
         const data = e.target?.result;
-        const workbook = XLSX.read(data, { type: 'binary', cellDates: true });
+        let workbook: XLSX.WorkBook;
+
+        if (esCSV && typeof data === 'string') {
+          // Para archivos CSV, XLSX interpreta la cadena de texto UTF-8 directamente sin dañar acentos
+          workbook = XLSX.read(data, { type: 'string' });
+        } else if (data instanceof ArrayBuffer) {
+          workbook = XLSX.read(new Uint8Array(data), { type: 'array', cellDates: true });
+        } else {
+          workbook = XLSX.read(data, { type: 'binary', cellDates: true });
+        }
 
         // Tomar la primera hoja
         const firstSheetName = workbook.SheetNames[0];
@@ -403,13 +455,20 @@ export async function parsearArchivoBackupExcel(file: File): Promise<ResultadoIm
         const resultado = procesarMatrizBackup(matriz);
         resolve(resultado);
       } catch (err) {
-        console.error('Error parseando archivo Excel:', err);
+        console.error('Error parseando archivo Excel o CSV:', err);
         reject(err);
       }
     };
 
     reader.onerror = err => reject(err);
-    reader.readAsBinaryString(file);
+
+    if (esCSV) {
+      // Lectura en UTF-8 nativo para preservar caracteres en español (Código, Descripción, Cotización)
+      reader.readAsText(file, 'utf-8');
+    } else {
+      // ArrayBuffer para archivos binarios de Excel (.xlsx, .xls)
+      reader.readAsArrayBuffer(file);
+    }
   });
 }
 
