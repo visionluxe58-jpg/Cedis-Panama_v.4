@@ -774,10 +774,17 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
       }
     });
 
+    // Supabase es la fuente de verdad definitiva en vivo.
+    // Solo se rescatan pedidos locales si fueron creados hace menos de 45 segundos (en tránsito),
+    // garantizando que si un pedido se elimina en Supabase, se borre de inmediato en el Admin y nunca reviva.
+    const AHORA = Date.now();
     filasLocales.forEach(f => {
       const key = `${f.pedidoId}___${f.codigoRepuesto || f.lineaId}`.toUpperCase();
-      // Si ya está en Supabase, prevalece Supabase; si no, se agrega el local
-      if (!mapaUnicos.has(key)) {
+      const matchTimestamp = f.lineaId.match(/^LIN-(\d{10,13})/);
+      const creadoHaceMs = matchTimestamp ? AHORA - Number(matchTimestamp[1]) : 99999999;
+      const esEnTransito = creadoHaceMs < 45000;
+
+      if (!mapaUnicos.has(key) && esEnTransito) {
         mapaUnicos.set(key, f);
       }
     });
