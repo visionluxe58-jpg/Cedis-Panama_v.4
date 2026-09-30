@@ -250,7 +250,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       '¿Desea auditar y depurar toda la base de datos de pedidos en Supabase?\n\n' +
       'Esta función:\n' +
       '1. 🛡️ Detecta y elimina filas duplicadas o triplicadas del mismo cliente y código de repuesto.\n' +
-      '2. 📦 Analiza pedidos despachados o retirados y los organiza en "Retiro en Mostrador CEDIS".\n' +
+      '2. 📦 Analiza repuestos despachados y los organiza en "Entregas de Bodega y Traslados".\n' +
       '3. 🧹 Garantiza la consistencia exacta de inventario y pedidos pendientes.'
     );
     if (!confirmar) return;
@@ -282,7 +282,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
         detalles.push(`🛡️ Se eliminaron ${resDup.eliminadosCount} registros duplicados en Supabase.`);
       }
       if (resDesp.migradosCount > 0) {
-        detalles.push(`📦 Se organizaron ${resDesp.migradosCount} repuestos despachados en Retiros.`);
+        detalles.push(`📦 Se organizaron ${resDesp.migradosCount} repuestos despachados en Entregas de Bodega y Traslados.`);
       }
       if (detalles.length > 0) {
         mensaje += `\n\n${detalles.join('\n')}`;

@@ -21,6 +21,7 @@ export interface ResultadoImportacionBackup {
   filasValidas: FilaBackupProcesada[];
   filasDescartadas: number;
   duplicadosOmitidosCount: number;
+  despachadosDetectadosCount: number;
   duplicadosDetalle: string[];
   pedidosUnicosCount: number;
   sucursalesInvolucradas: string[];
@@ -211,6 +212,7 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
   let idxCodigo = findCol(['codigo oem', 'codigo', 'cod', 'oem', 'part number', 'partnumber', 'no. parte', 'no parte', 'item', 'referencia', 'parte', 'repuesto']);
   let idxDesc = findCol(['descripcion', 'descrip', 'desc', 'nombre repuesto', 'detalle', 'articulo', 'producto']);
   const idxCant = findCol(['cant. solicitada', 'cantidad solicitada', 'cant', 'cantidad', 'qty', 'unidades', 'piezas']);
+  const idxEstatus = findCol(['estatus', 'estado', 'status', 'situacion', 'condicion', 'despachado', 'entrega', 'despacho']);
 
   // Respaldo heurístico inteligente si los nombres de columna son completamente desconocidos:
   if (idxCodigo === -1 && matrizCruda.length > 1) {
@@ -244,6 +246,7 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
   const filasValidas: FilaBackupProcesada[] = [];
   let filasDescartadas = 0;
   let duplicadosOmitidosCount = 0;
+  let despachadosDetectadosCount = 0;
   const duplicadosDetalle: string[] = [];
 
   // Mapa para prevenir duplicidad estricta de cliente con el mismo código en la misma orden
@@ -268,6 +271,7 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
     const rawModelo = idxModelo !== -1 ? String(row[idxModelo] || '').trim() : '';
     const rawCotizacion = idxCotizacion !== -1 ? String(row[idxCotizacion] || '').trim() : '';
     const rawOT = idxOT !== -1 ? String(row[idxOT] || '').trim() : '';
+    const rawEstatus = idxEstatus !== -1 ? String(row[idxEstatus] || '').trim() : '';
     let rawCodigo = idxCodigo !== -1 ? String(row[idxCodigo] || '').trim() : '';
     let rawDesc = idxDesc !== -1 ? String(row[idxDesc] || '').trim() : '';
     const rawCant = idxCant !== -1 ? row[idxCant] : 1;
@@ -357,15 +361,32 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
     // VIN / Placa
     const vinFinal = rawPlaca ? `PLACA: ${rawPlaca}` : 'POR VERIFICAR';
 
+    // Detección Quirúrgica de Estatus en el archivo
+    const estUpper = rawEstatus.toUpperCase();
+    const esDespachadoEnArchivo =
+      estUpper.includes('DESPACH') ||
+      estUpper.includes('ENTREG') ||
+      estUpper.includes('RETIR') ||
+      estUpper.includes('SALIDA') ||
+      estUpper.includes('COMPLET') ||
+      estUpper.includes('LISTO');
+
+    if (esDespachadoEnArchivo) {
+      despachadosDetectadosCount++;
+    }
+
+    const estatusFinal = esDespachadoEnArchivo ? 'Despachado' : 'Pendiente';
+    const cantDespachadaFinal = esDespachadoEnArchivo ? cantNum : 0;
+
     const nuevaFila: FilaBackupProcesada = {
       lineaId,
       pedidoId,
       codigoRepuesto: rawCodigo,
       descripcionOficial: rawDesc || 'Repuesto Original Changan',
       cantidadSolicitada: cantNum,
-      cantidadAsignada: 0,
-      cantidadDespachada: 0,
-      estatusLinea: 'Pendiente',
+      cantidadAsignada: esDespachadoEnArchivo ? cantNum : 0,
+      cantidadDespachada: cantDespachadaFinal,
+      estatusLinea: estatusFinal,
       contenedorAsignado: '',
       palletAsignado: '',
       packageNo: '',
@@ -406,11 +427,18 @@ export function procesarMatrizBackup(matrizCruda: any[][]): ResultadoImportacion
     );
   }
 
+  if (despachadosDetectadosCount > 0) {
+    advertenciasGlobales.push(
+      `📦 Historial de Despachos: Se detectaron ${despachadosDetectadosCount} repuestos ya despachados en el archivo. Se sincronizarán en Entregas de Bodega y Traslados sin reabrirse como pedidos pendientes.`
+    );
+  }
+
   return {
     totalFilasArchivo: matrizCruda.length - 1,
     filasValidas,
     filasDescartadas,
     duplicadosOmitidosCount,
+    despachadosDetectadosCount,
     duplicadosDetalle,
     pedidosUnicosCount: setPedidos.size,
     sucursalesInvolucradas: Array.from(setSucursales),

@@ -1,7 +1,7 @@
 /**
  * Servicio Generador de Documentos Oficiales en PDF:
  * 1. Etiquetas de Identificación para Pedidos Especiales (Formato 100x150mm / 4x6" para cajas/bultos)
- * 2. Actas de Entrega y Retiro en Mostrador CEDIS (Sin camión, retiro presencial por sucursales)
+ * 2. Comprobantes Oficiales de Entrega de Bodega y Traslados entre Sucursales (Sin camión, entrega presencial)
  * 3. Guías de Traslado y Transferencia
  * 
  * CEDIS Changan Panamá

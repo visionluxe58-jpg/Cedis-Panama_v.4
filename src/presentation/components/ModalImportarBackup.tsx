@@ -52,7 +52,12 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
   const [importandoASupabase, setImportandoASupabase] = useState(false);
   const [progresoImportacion, setProgresoImportacion] = useState(0);
   const [importacionFinalizada, setImportacionFinalizada] = useState(false);
-  const [resumenSupabase, setResumenSupabase] = useState<{ totalInsertadas: number; totalExistentesOmitidas: number; pedidosUnicos: number } | null>(null);
+  const [resumenSupabase, setResumenSupabase] = useState<{
+    totalInsertadas: number;
+    totalExistentesOmitidas: number;
+    totalDespachadosActualizados?: number;
+    pedidosUnicos: number;
+  } | null>(null);
   const [mostrarDetalleDuplicados, setMostrarDetalleDuplicados] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -137,6 +142,7 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
         setResumenSupabase({
           totalInsertadas: res.totalInsertadas,
           totalExistentesOmitidas: res.totalExistentesOmitidas,
+          totalDespachadosActualizados: res.totalDespachadosActualizados,
           pedidosUnicos: res.pedidosUnicos,
         });
         setImportacionFinalizada(true);
@@ -212,6 +218,12 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
                 <div className="flex justify-between text-amber-300 font-medium">
                   <span>Piezas ya existentes (Prevenidas de duplicarse):</span>
                   <strong className="font-mono">{resumenSupabase?.totalExistentesOmitidas} u.</strong>
+                </div>
+              )}
+              {Number(resumenSupabase?.totalDespachadosActualizados) > 0 && (
+                <div className="flex justify-between text-teal-300 font-medium">
+                  <span>Despachos sincronizados/actualizados:</span>
+                  <strong className="font-mono">{resumenSupabase?.totalDespachadosActualizados} u.</strong>
                 </div>
               )}
               {Number(resultadoParseo?.duplicadosOmitidosCount) > 0 && (
@@ -349,7 +361,7 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
             {resultadoParseo && (
               <div className="space-y-3 pt-2">
                 {/* Métricas del Archivo */}
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
                   <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
                     <p className="text-[10px] text-slate-400 uppercase font-bold">Total Repuestos</p>
                     <p className="text-xl font-black text-emerald-400 mt-0.5">
@@ -361,6 +373,16 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
                     <p className="text-[10px] text-slate-400 uppercase font-bold">Órdenes / Pedidos</p>
                     <p className="text-xl font-black text-cyan-300 mt-0.5">
                       {resultadoParseo.pedidosUnicosCount} <span className="text-xs font-normal text-slate-400">pedidos</span>
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950 border border-teal-500/30 rounded-xl p-3">
+                    <p className="text-[10px] text-teal-300 uppercase font-bold flex items-center gap-1">
+                      <PackageCheck className="w-3 h-3 text-teal-400" />
+                      <span>Despachados</span>
+                    </p>
+                    <p className="text-xl font-black text-teal-300 mt-0.5">
+                      {resultadoParseo.despachadosDetectadosCount} <span className="text-xs font-normal text-slate-400">entregados</span>
                     </p>
                   </div>
 
@@ -388,6 +410,19 @@ export const ModalImportarBackup: React.FC<ModalImportarBackupProps> = ({
                     </p>
                   </div>
                 </div>
+
+                {/* Banner Quirúrgico de Despachados Detectados */}
+                {resultadoParseo.despachadosDetectadosCount > 0 && (
+                  <div className="bg-teal-950/40 border border-teal-600/40 rounded-xl p-3.5 text-xs space-y-1.5">
+                    <div className="flex items-center gap-2 text-teal-300 font-bold">
+                      <PackageCheck className="w-4 h-4 text-teal-400 shrink-0" />
+                      <span>📦 Detección Quirúrgica de Despachados ({resultadoParseo.despachadosDetectadosCount} piezas identificadas)</span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      Se detectaron repuestos con estatus de entrega/despacho en el archivo subido. El sistema los registrará con estatus <strong className="text-teal-300">Despachado</strong> directamente en Supabase y en la sección de <strong className="text-white">Entregas de Bodega y Traslados</strong>, asegurando que <u>no aparezcan como pendientes</u> ni se dupliquen o tripliquen pedidos.
+                    </p>
+                  </div>
+                )}
 
                 {/* Alerta de Protección Anti-Duplicados */}
                 {resultadoParseo.duplicadosOmitidosCount > 0 && (

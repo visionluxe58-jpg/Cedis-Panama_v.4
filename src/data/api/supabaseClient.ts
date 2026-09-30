@@ -324,21 +324,56 @@ export async function importarFilasBackupSupabase(
   });
 
   let totalExistentesOmitidas = 0;
+  let totalDespachadosActualizados = 0;
   let payloadFiltrado = payloadToInsert;
 
-  // 1. Verificar registros existentes en Supabase para evitar duplicación o triplicación
+  // 1. Reconciliación Quirúrgica en Supabase:
+  //    - Detecta y cruza despachos existentes
+  //    - Actualiza estatus de pedidos ya entregados
+  //    - Previene duplicidad o triplicidad de clientes y códigos
   if (isSupabaseConfigured() && supabase) {
     try {
       const pedidosArray = Array.from(pedidosSet);
-      const setExistentes = new Set<string>();
-      const setClientesExistentes = new Set<string>();
+      const mapaExistentesMatriz = new Map<string, any>();
+      const mapaClientesExistentesMatriz = new Map<string, any>();
+      const setDespachadosHistoricos = new Set<string>();
 
-      // Consultar en lotes de 40 pedidos
+      // 1.1 Consultar despachos existentes para verificar qué repuestos ya salieron de bodega
+      try {
+        const { data: dataDesp } = await supabase
+          .from('despachos')
+          .select('pedido_id, numero_guia, transportista, lineas_json');
+
+        if (dataDesp && dataDesp.length > 0) {
+          dataDesp.forEach((d: any) => {
+            const pId = String(d.pedido_id || '').trim().toUpperCase();
+            if (pId) setDespachadosHistoricos.add(pId);
+
+            if (d.lineas_json) {
+              try {
+                const parsed = JSON.parse(d.lineas_json);
+                if (Array.isArray(parsed)) {
+                  parsed.forEach((l: any) => {
+                    const c = String(l.codigoRepuesto || l.codigo_repuesto || '').trim().toUpperCase();
+                    if (pId && c) setDespachadosHistoricos.add(`${pId}___${c}`);
+                    const cli = String(l.cliente || '').trim().toUpperCase().replace(/\s+/g, ' ');
+                    if (cli && c) setDespachadosHistoricos.add(`${cli}___${c}`);
+                  });
+                }
+              } catch {}
+            }
+          });
+        }
+      } catch (errDesp) {
+        console.warn('Advertencia al consultar despachos en Supabase:', errDesp);
+      }
+
+      // 1.2 Consultar matriz_pedidos existente en lotes de 40 pedidos
       for (let i = 0; i < pedidosArray.length; i += 40) {
         const chunkPedidos = pedidosArray.slice(i, i + 40);
         const { data: dataExistentes } = await supabase
           .from('matriz_pedidos')
-          .select('pedido_id, codigo_repuesto, cliente, cotizacion_numero_or')
+          .select('id, pedido_id, codigo_repuesto, cliente, cotizacion_numero_or, estatus_linea, cantidad_despachada')
           .in('pedido_id', chunkPedidos);
 
         if (dataExistentes) {
@@ -348,15 +383,20 @@ export async function importarFilasBackupSupabase(
             const cli = String(r.cliente || '').trim().toUpperCase().replace(/\s+/g, ' ');
             const or = String(r.cotizacion_numero_or || '').trim().toUpperCase();
 
-            setExistentes.add(`${pid}___${cod}`);
-            setClientesExistentes.add(`${cli}___${or}___${cod}`);
+            const keyPedido = `${pid}___${cod}`;
+            const keyCliente = `${cli}___${or}___${cod}`;
+
+            mapaExistentesMatriz.set(keyPedido, r);
+            mapaClientesExistentesMatriz.set(keyCliente, r);
           });
         }
       }
 
-      // Filtrar filas que ya existen exactamente en la base de datos
+      // 1.3 Filtrar y sincronizar filas quirúrgicamente
       const nuevasFilas: typeof payloadToInsert = [];
-      payloadToInsert.forEach(item => {
+      const despachosARegistrar: any[] = [];
+
+      for (const item of payloadToInsert) {
         const pid = String(item.pedido_id || '').trim().toUpperCase();
         const cod = String(item.codigo_repuesto || '').trim().toUpperCase();
         const cli = String(item.cliente || '').trim().toUpperCase().replace(/\s+/g, ' ');
@@ -365,21 +405,97 @@ export async function importarFilasBackupSupabase(
         const keyPedido = `${pid}___${cod}`;
         const keyCliente = `${cli}___${or}___${cod}`;
 
-        if (setExistentes.has(keyPedido) || setClientesExistentes.has(keyCliente)) {
+        // Si este repuesto ya fue entregado físicamente en CEDIS con anterioridad:
+        const yaDespachadoEnHistorial =
+          setDespachadosHistoricos.has(pid) ||
+          setDespachadosHistoricos.has(keyPedido) ||
+          setDespachadosHistoricos.has(`${cli}___${cod}`);
+
+        if (yaDespachadoEnHistorial) {
+          item.estatus_linea = 'Despachado';
+          item.cantidad_despachada = item.cantidad_solicitada;
+          item.cantidad_asignada = item.cantidad_solicitada;
+        }
+
+        const registroExistente = mapaExistentesMatriz.get(keyPedido) || mapaClientesExistentesMatriz.get(keyCliente);
+
+        if (registroExistente) {
+          // El repuesto ya existe en Supabase
+          const estExistente = String(registroExistente.estatus_linea || '').toUpperCase();
+          const estNuevo = String(item.estatus_linea || '').toUpperCase();
+
+          // Si el archivo trae estatus Despachado y en Supabase aún figuraba Pendiente:
+          if (estNuevo.includes('DESPACH') && !estExistente.includes('DESPACH')) {
+            try {
+              await supabase
+                .from('matriz_pedidos')
+                .update({
+                  estatus_linea: 'Despachado',
+                  cantidad_despachada: item.cantidad_solicitada,
+                  cantidad_asignada: item.cantidad_solicitada,
+                })
+                .eq('id', registroExistente.id);
+
+              totalDespachadosActualizados++;
+              despachosARegistrar.push(item);
+            } catch (errUpd) {
+              console.warn('Error actualizando estatus a Despachado:', errUpd);
+            }
+          }
+
           totalExistentesOmitidas++;
         } else {
+          // Repuesto nuevo
           nuevasFilas.push(item);
-          // Registrar en sets locales para no duplicar dentro del mismo archivo
-          setExistentes.add(keyPedido);
-          setClientesExistentes.add(keyCliente);
+          mapaExistentesMatriz.set(keyPedido, item);
+          mapaClientesExistentesMatriz.set(keyCliente, item);
+
+          if (item.estatus_linea === 'Despachado') {
+            despachosARegistrar.push(item);
+          }
         }
-      });
+      }
 
       payloadFiltrado = nuevasFilas;
-      console.log(`🛡️ [CEDIS ANTI-DUPLICADOS] Filas a insertar: ${payloadFiltrado.length}, Filas ya existentes omitidas: ${totalExistentesOmitidas}`);
+
+      // 1.4 Si hay repuestos marcados como despachados, registrarlos en la tabla despachos/traslados
+      if (despachosARegistrar.length > 0) {
+        for (const d of despachosARegistrar) {
+          await guardarDespachoSupabase({
+            numeroGuia: `ACTA-${d.pedido_id}`,
+            pedidoId: d.pedido_id,
+            sucursalDestino: d.sucursal,
+            transportista: `Entrega Bodega (Archivo Sincronizado) | Asesor: ${d.colaborador || 'Personal Sucursal'}`,
+            placaVehiculo: 'TRASLADO BODEGA',
+            despachadorCedis: 'Bodega Central CEDIS',
+            fechaDespacho: new Date().toISOString().slice(0, 10),
+            totalPiezas: Number(d.cantidad_solicitada) || 1,
+            totalLineas: 1,
+            estadoEntrega: 'ENTREGADO',
+            observaciones: `Repuesto ${d.codigo_repuesto} (${d.descripcion_oficial}) sincronizado desde archivo como Despachado`,
+            lineasJson: JSON.stringify([{
+              lineaId: `LIN-${d.pedido_id}-1`,
+              pedidoId: d.pedido_id,
+              codigoRepuesto: d.codigo_repuesto,
+              descripcionOficial: d.descripcion_oficial,
+              cantidadSolicitada: d.cantidad_solicitada,
+              cantidadAsignada: d.cantidad_solicitada,
+              cantidadDespachada: d.cantidad_solicitada,
+              estatusLinea: 'Despachado',
+              sucursal: d.sucursal,
+              colaborador: d.colaborador,
+              cliente: d.cliente,
+              modeloChangan: d.modelo_changan,
+              numeroOR: d.cotizacion_numero_or,
+              vin: d.vin,
+            }]),
+          });
+        }
+      }
+
+      console.log(`🛡️ [CEDIS RECONCILIACIÓN QUIRÚRGICA] Filas a insertar: ${payloadFiltrado.length}, Omitidas repetidas: ${totalExistentesOmitidas}, Despachados actualizados: ${totalDespachadosActualizados}`);
     } catch (errCheck) {
       console.warn('Advertencia al consultar filas existentes en Supabase:', errCheck);
-      // Continuar con el lote original si la consulta previa falló
     }
   }
 
@@ -429,6 +545,7 @@ export async function importarFilasBackupSupabase(
     ok: true,
     totalInsertadas: payloadFiltrado.length,
     totalExistentesOmitidas,
+    totalDespachadosActualizados,
     pedidosUnicos: pedidosSet.size,
   };
 }
