@@ -502,22 +502,37 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
   }
 
   try {
-    // 1. Consultar tablas disponibles en paralelo con fallback robusto
-    const [respMatrizOrder, respLineas, respPedidos] = await Promise.allSettled([
-      supabase.from('matriz_pedidos').select('*').order('created_at', { ascending: false }),
+    // 1. Consultar tablas disponibles en paralelo con paginación robusta para matriz_pedidos
+    const [respLineas, respPedidos] = await Promise.allSettled([
       supabase.from('lineas_pedido').select('*'),
       supabase.from('pedidos').select('*'),
     ]);
 
+    // Paginación exhaustiva para matriz_pedidos (supera el límite por defecto de 1,000 filas de PostgREST)
     let dataMatriz: any[] = [];
-    if (respMatrizOrder.status === 'fulfilled' && !respMatrizOrder.value.error && respMatrizOrder.value.data) {
-      dataMatriz = respMatrizOrder.value.data;
-    } else {
-      // Reintentar sin order si created_at no existe
-      const respSinOrder = await supabase.from('matriz_pedidos').select('*');
-      if (!respSinOrder.error && respSinOrder.data) {
-        dataMatriz = respSinOrder.data;
+    const PAGE_SIZE = 1000;
+    let page = 0;
+    while (true) {
+      const start = page * PAGE_SIZE;
+      const end = start + PAGE_SIZE - 1;
+      const { data, error } = await supabase
+        .from('matriz_pedidos')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(start, end);
+
+      if (error || !data || data.length === 0) {
+        if (page === 0 && error) {
+          // Reintentar sin order si created_at no existe
+          const respSinOrder = await supabase.from('matriz_pedidos').select('*').limit(4000);
+          if (respSinOrder.data) dataMatriz = respSinOrder.data;
+        }
+        break;
       }
+      dataMatriz.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      page++;
+      if (page >= 10) break; // Límite de seguridad (hasta 10,000 filas)
     }
 
     // Fallback a matriz_central si matriz_pedidos falló o está vacía
@@ -540,7 +555,7 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
 
     // Telemetría de diagnóstico en consola para auditoría inmediata
     if (dataMatriz.length > 0) {
-      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Filas cargadas de matriz_pedidos:', dataMatriz.length);
+      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Filas crudas en matriz_pedidos:', dataMatriz.length);
       console.log('🔍 [CEDIS DB DIAGNÓSTICO] Columnas exactas encontradas:', Object.keys(dataMatriz[0] || {}));
       console.log('🔍 [CEDIS DB DIAGNÓSTICO] Muestra cruda de fila 1:', dataMatriz[0]);
     }
@@ -574,7 +589,29 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
 
     // CASO A: Hay datos en matriz_pedidos (o matriz_central)
     if (dataMatriz.length > 0) {
-      filasSupabase = dataMatriz.map((item: any, idx: number) => {
+      // Filtrar filas fantasma / vacías (importaciones corruptas o filas vacías que sólo tienen pedido_id)
+      const dataMatrizFiltrada = dataMatriz.filter((item: any) => {
+        const pedidoId = String(getField(item, CANDIDATOS_PEDIDO_ID) || '').trim().toUpperCase();
+        const cod = String(getField(item, CANDIDATOS_CODIGO_REPUESTO, 'codigo') || '').trim();
+        const desc = String(getField(item, CANDIDATOS_DESCRIPCION, 'descripcion') || '').trim();
+        const cli = String(getField(item, CANDIDATOS_CLIENTE, 'cliente') || '').trim();
+        const col = String(getField(item, CANDIDATOS_ASESOR, 'asesor') || '').trim();
+        const vin = String(getField(item, CANDIDATOS_VIN, 'vin') || '').trim();
+        const or = String(getField(item, CANDIDATOS_OR, 'or') || '').trim();
+
+        // Si faltan datos en la matriz pero lineas_pedido o pedidos tienen datos, rescatar la fila
+        if (pedidoId && (mapLineasPorFolio.has(pedidoId) || mapPedidosPorFolio.has(pedidoId))) {
+          return true;
+        }
+
+        // Si la fila carece totalmente de código, descripción, cliente, asesor, VIN y OR, es un registro fantasma
+        const esFantasma = !cod && !desc && (!cli || cli.toLowerCase() === 'consumidor final') && (!col || col.toLowerCase() === 'asesor') && !vin && !or;
+        return !esFantasma;
+      });
+
+      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Filas operativas tras depuración de fantasmas:', dataMatrizFiltrada.length);
+
+      filasSupabase = dataMatrizFiltrada.map((item: any, idx: number) => {
         const rawEstatus = String(
           getField(item, ['estatus_linea', 'estatus', 'estado', 'estado_despacho', 'estado_pedido']) || 'Pendiente'
         ).trim();
@@ -591,8 +628,6 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
           (cantDespachada > 0 && cantSolicitada > 0 && cantDespachada >= cantSolicitada) ||
           (cantDespachada > 0 && tieneGuia) ||
           (tieneFechaDespacho && tieneGuia);
-
-        const estatusFinal = esDespachado ? 'Despachado' : (rawEstatus || 'Pendiente');
 
         const pedidoId = String(getField(item, CANDIDATOS_PEDIDO_ID) || '').trim();
         let codigoRepuesto = String(getField(item, CANDIDATOS_CODIGO_REPUESTO, 'codigo') || '').trim();
@@ -635,17 +670,29 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
           }
         }
 
+        // Mapeo inteligente de contenedor y estatus si viene en estatus_linea (ej: 2604M00000SL0066)
+        let contenedorAsignado = String(getField(item, ['contenedor_asignado', 'contenedor', 'contenedor_id']) || '').trim();
+        let palletAsignado = String(getField(item, ['pallet_asignado', 'pallet', 'pallet_case_no']) || '').trim();
+        let estatusCalculado = rawEstatus;
+
+        if (!contenedorAsignado && /^26\d{2}[A-Z0-9]/i.test(rawEstatus)) {
+          contenedorAsignado = rawEstatus;
+          estatusCalculado = 'Asignado';
+        }
+
+        const estatusFinal = esDespachado ? 'Despachado' : (estatusCalculado || 'Pendiente');
+
         return {
           lineaId: String(getField(item, ['linea_id', 'id', 'lineaId']) || `LIN-${pedidoId}-${idx}`),
           pedidoId: pedidoId,
           codigoRepuesto: codigoRepuesto,
           descripcionOficial: descripcionOficial,
           cantidadSolicitada: cantSolicitada,
-          cantidadAsignada: esDespachado ? (cantAsignada || cantSolicitada) : cantAsignada,
+          cantidadAsignada: esDespachado ? (cantAsignada || cantSolicitada) : (cantAsignada || (contenedorAsignado ? cantSolicitada : 0)),
           cantidadDespachada: esDespachado ? (cantDespachada || cantSolicitada) : cantDespachada,
           estatusLinea: estatusFinal,
-          contenedorAsignado: String(getField(item, ['contenedor_asignado', 'contenedor', 'contenedor_id']) || ''),
-          palletAsignado: String(getField(item, ['pallet_asignado', 'pallet', 'pallet_case_no']) || ''),
+          contenedorAsignado: contenedorAsignado,
+          palletAsignado: palletAsignado,
           packageNo: String(getField(item, ['package_no', 'paquete', 'package']) || ''),
           ubicacionCedis: String(getField(item, ['ubicacion_cedis', 'ubicacion']) || ''),
           sucursal: sucursal || 'Villa Lucre',
@@ -698,12 +745,33 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
       });
     }
 
-    // Fusión de filas de Supabase con pedidos locales garantizando que los pedidos nuevos estén siempre visibles
+    // Fusión inteligente: deduplicar y consolidar la información más completa para cada repuesto
     const mapaUnicos = new Map<string, FilaRastreador>();
     filasSupabase.forEach(f => {
-      // Clave única compuesta (evita que pedidos sin código sobrescriban a otros)
+      // Clave única compuesta por Pedido + Código de Repuesto (o lineaId si no hay código)
       const key = `${f.pedidoId}___${f.codigoRepuesto || f.lineaId}`.toUpperCase();
-      mapaUnicos.set(key, f);
+
+      if (!mapaUnicos.has(key)) {
+        mapaUnicos.set(key, f);
+      } else {
+        const exist = mapaUnicos.get(key)!;
+        // Si el registro existente tenía placeholders y este tiene datos reales, enriquecer
+        if ((!exist.cliente || exist.cliente === 'Consumidor Final') && f.cliente && f.cliente !== 'Consumidor Final') {
+          exist.cliente = f.cliente;
+        }
+        if ((!exist.colaborador || exist.colaborador === 'Asesor') && f.colaborador && f.colaborador !== 'Asesor') {
+          exist.colaborador = f.colaborador;
+        }
+        if (!exist.vin && f.vin) exist.vin = f.vin;
+        if (!exist.numeroOR && f.numeroOR) exist.numeroOR = f.numeroOR;
+        if (!exist.contenedorAsignado && f.contenedorAsignado) exist.contenedorAsignado = f.contenedorAsignado;
+        if (!exist.palletAsignado && f.palletAsignado) exist.palletAsignado = f.palletAsignado;
+        if (!exist.codigoRepuesto && f.codigoRepuesto) exist.codigoRepuesto = f.codigoRepuesto;
+        if (!exist.descripcionOficial && f.descripcionOficial) exist.descripcionOficial = f.descripcionOficial;
+        if (exist.estatusLinea === 'Pendiente' && f.estatusLinea !== 'Pendiente') {
+          exist.estatusLinea = f.estatusLinea;
+        }
+      }
     });
 
     filasLocales.forEach(f => {
@@ -715,6 +783,7 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
     });
 
     const resultadoFinal = Array.from(mapaUnicos.values());
+    console.log(`✅ [CEDIS DB] Sincronización exitosa: ${resultadoFinal.length} pedidos operativos con códigos listos.`);
     return resultadoFinal;
   } catch (err) {
     console.error('Error en obtenerFilasAdminSupabase:', err);
