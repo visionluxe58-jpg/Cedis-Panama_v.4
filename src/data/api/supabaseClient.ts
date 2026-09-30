@@ -257,26 +257,233 @@ export async function guardarPedidoSupabase(payload: {
 }
 
 /**
- * Busca de forma insensible a mayúsculas, espacios y acentos
- * para tolerar importaciones directas de CSV o diferencias de esquema en Supabase
+ * Listas maestras de candidatos de columnas para tolerar cualquier variación de nombre en Supabase,
+ * Google Sheets, importaciones CSV y sistemas ERP/SAP
  */
-export function getField(obj: any, candidates: string[]): any {
+const CANDIDATOS_PEDIDO_ID = [
+  'pedido_id', 'id_pedido', 'pedido', 'folio', 'no_pedido', 'numero_pedido',
+  'nro_pedido', 'id', 'orden_id', 'no_de_pedido', 'documento_pedido'
+];
+
+const CANDIDATOS_CODIGO_REPUESTO = [
+  'codigo_repuesto', 'codigo', 'cod_repuesto', 'part_number', 'partnumber',
+  'part_no', 'partno', 'part_num', 'partnum', 'part', 'parte',
+  'numero_de_parte', 'numerodeparte', 'numero_parte', 'numeroparte',
+  'num_parte', 'numparte', 'no_parte', 'noparte', 'nro_parte', 'nroparte', 'n_parte',
+  'codigo_de_parte', 'codigodeparte', 'codigo_parte', 'codigoparte', 'cod_parte', 'codparte',
+  'codigo_de_repuesto', 'codigoderepuesto', 'repuesto_codigo', 'repuestocodigo',
+  'cod_rep', 'item', 'item_code', 'itemcode', 'item_no', 'itemno',
+  'articulo', 'codigo_articulo', 'cod_articulo', 'sku', 'sku_code',
+  'referencia', 'ref', 'material', 'codigo_material', 'num_material',
+  'oem', 'codigo_oem', 'pieza', 'codigo_pieza', 'repuesto_cod', 'c_digo',
+  'no_de_repuesto', 'num_repuesto', 'codigo_producto', 'cod_producto'
+];
+
+const CANDIDATOS_DESCRIPCION = [
+  'descripcion_oficial', 'descripcion', 'descrip', 'desc', 'descript',
+  'repuesto', 'descripcion_repuesto', 'descripcion_de_repuesto', 'descripcion_del_repuesto',
+  'desc_repuesto', 'nombre_repuesto', 'nombre_del_repuesto', 'nombre_de_repuesto',
+  'nom_repuesto', 'nombre', 'detalle', 'detalles', 'detalle_repuesto',
+  'articulo', 'nombre_articulo', 'producto', 'nombre_producto',
+  'pieza', 'denominacion', 'denominacion_repuesto', 'texto_breve',
+  'texto', 'material_descripcion', 'descripcion_material', 'concepto',
+  'nombre_pieza', 'descripcion_articulo', 'descripcion_pieza'
+];
+
+const CANDIDATOS_CLIENTE = [
+  'cliente', 'nombre_cliente', 'cliente_nombre', 'nombre_del_cliente',
+  'razon_social', 'razonsocial', 'propietario', 'titular', 'comprador',
+  'taller', 'consumidor', 'cliente_final', 'aseguradora', 'contacto',
+  'solicitado_para', 'nombre_del_taller'
+];
+
+const CANDIDATOS_ASESOR = [
+  'colaborador', 'asesor', 'vendedor', 'ejecutivo', 'creado_por',
+  'usuario', 'solicitante', 'encargado', 'responsable', 'empleado',
+  'personal', 'nombre_asesor', 'asesor_servicio', 'asesor_repuestos',
+  'quien_pide', 'agente', 'creador'
+];
+
+const CANDIDATOS_OR = [
+  'cotizacion_numero_or', 'numero_or', 'no_or', 'nro_or', 'or',
+  'orden', 'no_orden', 'numero_orden', 'nro_orden', 'num_orden',
+  'orden_de_reparacion', 'orden_reparacion', 'ordendereparacion',
+  'no_cotizacion', 'cotizacion', 'no_cot', 'num_cotizacion',
+  'ot', 'no_ot', 'numero_ot', 'num_ot', 'orden_trabajo', 'orden_de_trabajo',
+  'sap', 'pedido_sap', 'no_sap', 'documento', 'no_documento', 'factura'
+];
+
+const CANDIDATOS_VIN = [
+  'vin', 'chasis', 'numero_chasis', 'no_chasis', 'num_chasis',
+  'vin_chasis', 'serie', 'numero_serie', 'no_serie'
+];
+
+const CANDIDATOS_SUCURSAL = [
+  'sucursal', 'sucursal_destino', 'sucursalorigen', 'tienda', 'agencia',
+  'ubicacion_sucursal', 'taller_origen', 'sucursal_origen'
+];
+
+const CANDIDATOS_MODELO = [
+  'modelo_changan', 'modelo', 'vehiculo', 'auto', 'carro', 'unidad',
+  'linea_vehiculo', 'modelo_auto', 'vehiculo_modelo'
+];
+
+const CANDIDATOS_CANTIDAD = [
+  'cantidad_solicitada', 'cantidad', 'cant', 'cant_solicitada',
+  'piezas', 'unidades', 'cant_pedida', 'pedida', 'solicitado', 'qty'
+];
+
+/**
+ * Normaliza una cadena para comparaciones insensibles a mayúsculas, espacios, tildes y caracteres especiales
+ */
+function normStr(str: string): string {
+  if (!str) return '';
+  return String(str)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Busca de forma ultra-inteligente el valor de un campo en un objeto de Supabase o CSV
+ * Admite candidatos exactos, variaciones de formato, subobjetos JSON e inferencia heurística
+ */
+export function getField(
+  obj: any,
+  candidates: string[],
+  heuristicType?: 'codigo' | 'descripcion' | 'cliente' | 'asesor' | 'or' | 'vin' | 'cantidad'
+): any {
   if (!obj || typeof obj !== 'object') return undefined;
+
   const keys = Object.keys(obj);
-  for (const candidate of candidates) {
-    const normCandidate = candidate.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+  const normCandidates = candidates.map(normStr);
+
+  // 1. Coincidencia normalizada directa
+  for (const nc of normCandidates) {
     for (const key of keys) {
-      const normKey = key.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-      if (normKey === normCandidate && obj[key] !== undefined && obj[key] !== null && obj[key] !== '') {
-        return obj[key];
+      if (normStr(key) === nc) {
+        const val = obj[key];
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          return val;
+        }
       }
     }
   }
+
+  // 2. Búsqueda dentro de campos JSON anidados (ej: datos_completos, lineas, detalle, payload)
+  const jsonContainers = ['datos_completos', 'datos', 'data', 'payload', 'detalle', 'detalles', 'extra', 'raw_data', 'lineas'];
+  for (const containerKey of jsonContainers) {
+    if (obj[containerKey]) {
+      let subObj = obj[containerKey];
+      if (typeof subObj === 'string') {
+        try {
+          subObj = JSON.parse(subObj);
+        } catch {
+          subObj = null;
+        }
+      }
+      if (subObj && typeof subObj === 'object') {
+        // Si es array (ej: lineas), tomar el primer elemento
+        const targetObj = Array.isArray(subObj) ? subObj[0] : subObj;
+        if (targetObj && typeof targetObj === 'object') {
+          const subVal = getField(targetObj, candidates, heuristicType);
+          if (subVal !== undefined && subVal !== null && String(subVal).trim() !== '') {
+            return subVal;
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Heurística contextual según el tipo de campo
+  if (heuristicType === 'codigo') {
+    for (const key of keys) {
+      const nk = normStr(key);
+      const esCandidatoCodigo =
+        (nk.includes('part') || nk.includes('cod') || nk.includes('sku') || nk.includes('item') || nk.includes('oem') || nk.includes('pieza') || nk.includes('material')) &&
+        !nk.includes('pedido') &&
+        !nk.includes('cliente') &&
+        !nk.includes('vin') &&
+        !nk.includes('or') &&
+        !nk.includes('sucursal') &&
+        !nk.includes('rack') &&
+        !nk.includes('pallet') &&
+        !nk.includes('contenedor') &&
+        !nk.includes('postal') &&
+        !nk.includes('tel') &&
+        !nk.includes('user') &&
+        !nk.includes('asesor');
+
+      if (esCandidatoCodigo) {
+        const val = obj[key];
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          return val;
+        }
+      }
+    }
+  }
+
+  if (heuristicType === 'descripcion') {
+    for (const key of keys) {
+      const nk = normStr(key);
+      const esCandidatoDesc =
+        (nk.includes('desc') || nk.includes('nom') || nk.includes('detall') || nk.includes('repuest') || nk.includes('articulo') || nk.includes('producto') || nk.includes('denominacion') || nk.includes('texto')) &&
+        !nk.includes('cod') &&
+        !nk.includes('part') &&
+        !nk.includes('cliente') &&
+        !nk.includes('asesor') &&
+        !nk.includes('colaborador') &&
+        !nk.includes('user') &&
+        !nk.includes('pedido') &&
+        !nk.includes('sucursal');
+
+      if (esCandidatoDesc) {
+        const val = obj[key];
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          return val;
+        }
+      }
+    }
+  }
+
+  if (heuristicType === 'cliente') {
+    for (const key of keys) {
+      const nk = normStr(key);
+      if ((nk.includes('client') || nk.includes('razon') || nk.includes('titular') || nk.includes('propietario')) && !nk.includes('asesor') && !nk.includes('pedido')) {
+        const val = obj[key];
+        if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+      }
+    }
+  }
+
+  if (heuristicType === 'asesor') {
+    for (const key of keys) {
+      const nk = normStr(key);
+      if ((nk.includes('asesor') || nk.includes('colaborad') || nk.includes('vendedor') || nk.includes('solicitante')) && !nk.includes('cliente') && !nk.includes('pedido')) {
+        const val = obj[key];
+        if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+      }
+    }
+  }
+
+  if (heuristicType === 'or') {
+    for (const key of keys) {
+      const nk = normStr(key);
+      if ((nk.includes('orden') || nk.includes('cotiza') || nk.includes('ot') || nk === 'or' || nk.includes('sap')) && !nk.includes('asesor') && !nk.includes('cliente')) {
+        const val = obj[key];
+        if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+      }
+    }
+  }
+
   return undefined;
 }
 
 /**
  * Obtiene todas las filas de matriz_pedidos para el Panel de Administrador y Rastreador
+ * con tolerancia multi-tabla (matriz_pedidos, matriz_central, lineas_pedido, pedidos)
+ * y cruce automático de datos para garantizar que códigos y nombres de repuestos NUNCA salgan vacíos.
  */
 export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
   // Cargar pedidos locales
@@ -295,41 +502,88 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
   }
 
   try {
-    // 1. Intentar cargar desde matriz_pedidos
-    let { data, error } = await supabase
-      .from('matriz_pedidos')
-      .select('*')
-      .order('created_at', { ascending: false });
+    // 1. Consultar tablas disponibles en paralelo con fallback robusto
+    const [respMatrizOrder, respLineas, respPedidos] = await Promise.allSettled([
+      supabase.from('matriz_pedidos').select('*').order('created_at', { ascending: false }),
+      supabase.from('lineas_pedido').select('*'),
+      supabase.from('pedidos').select('*'),
+    ]);
 
-    // Fallback sin order si created_at no existe en tablas importadas de CSV
-    if (error) {
+    let dataMatriz: any[] = [];
+    if (respMatrizOrder.status === 'fulfilled' && !respMatrizOrder.value.error && respMatrizOrder.value.data) {
+      dataMatriz = respMatrizOrder.value.data;
+    } else {
+      // Reintentar sin order si created_at no existe
       const respSinOrder = await supabase.from('matriz_pedidos').select('*');
       if (!respSinOrder.error && respSinOrder.data) {
-        data = respSinOrder.data;
-        error = null;
+        dataMatriz = respSinOrder.data;
       }
     }
 
     // Fallback a matriz_central si matriz_pedidos falló o está vacía
-    if (error || !data || data.length === 0) {
+    if (dataMatriz.length === 0) {
       const respCentral = await supabase.from('matriz_central').select('*');
       if (!respCentral.error && respCentral.data && respCentral.data.length > 0) {
-        data = respCentral.data;
-        error = null;
+        dataMatriz = respCentral.data;
       }
     }
 
+    let dataLineas: any[] = [];
+    if (respLineas.status === 'fulfilled' && !respLineas.value.error && respLineas.value.data) {
+      dataLineas = respLineas.value.data;
+    }
+
+    let dataPedidos: any[] = [];
+    if (respPedidos.status === 'fulfilled' && !respPedidos.value.error && respPedidos.value.data) {
+      dataPedidos = respPedidos.value.data;
+    }
+
+    // Telemetría de diagnóstico en consola para auditoría inmediata
+    if (dataMatriz.length > 0) {
+      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Filas cargadas de matriz_pedidos:', dataMatriz.length);
+      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Columnas exactas encontradas:', Object.keys(dataMatriz[0] || {}));
+      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Muestra cruda de fila 1:', dataMatriz[0]);
+    }
+    if (dataLineas.length > 0) {
+      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Filas en lineas_pedido:', dataLineas.length);
+    }
+    if (dataPedidos.length > 0) {
+      console.log('🔍 [CEDIS DB DIAGNÓSTICO] Filas en pedidos:', dataPedidos.length);
+    }
+
+    // Mapa de líneas de repuestos por folio / pedidoId para hidratación cruzada
+    const mapLineasPorFolio = new Map<string, any[]>();
+    dataLineas.forEach(l => {
+      const key = String(getField(l, CANDIDATOS_PEDIDO_ID) || l.folio || l.pedido_id || l.pedidoId || '').trim().toUpperCase();
+      if (key) {
+        if (!mapLineasPorFolio.has(key)) mapLineasPorFolio.set(key, []);
+        mapLineasPorFolio.get(key)!.push(l);
+      }
+    });
+
+    // Mapa de pedidos (cabecera) por folio / id para hidratación de cliente, asesor y OR
+    const mapPedidosPorFolio = new Map<string, any>();
+    dataPedidos.forEach(p => {
+      const key = String(getField(p, CANDIDATOS_PEDIDO_ID) || p.folio || p.id || '').trim().toUpperCase();
+      if (key) {
+        mapPedidosPorFolio.set(key, p);
+      }
+    });
+
     let filasSupabase: FilaRastreador[] = [];
-    if (!error && data && data.length > 0) {
-      filasSupabase = data.map((item: any) => {
-        const rawEstatus = String(getField(item, ['estatus_linea', 'estatus', 'estado', 'estado_despacho', 'estado_pedido']) || 'Pendiente').trim();
-        const cantSolicitada = Number(getField(item, ['cantidad_solicitada', 'cantidad', 'cant_solicitada', 'solicitado'])) || 0;
+
+    // CASO A: Hay datos en matriz_pedidos (o matriz_central)
+    if (dataMatriz.length > 0) {
+      filasSupabase = dataMatriz.map((item: any, idx: number) => {
+        const rawEstatus = String(
+          getField(item, ['estatus_linea', 'estatus', 'estado', 'estado_despacho', 'estado_pedido']) || 'Pendiente'
+        ).trim();
+        const cantSolicitada = Number(getField(item, CANDIDATOS_CANTIDAD, 'cantidad')) || 1;
         const cantDespachada = Number(getField(item, ['cantidad_despachada', 'despachada', 'cant_despachada', 'piezas_despachadas'])) || 0;
         const cantAsignada = Number(getField(item, ['cantidad_asignada', 'asignada', 'cant_asignada'])) || 0;
         const tieneGuia = !!getField(item, ['guia', 'guia_despacho', 'numero_guia', 'acta', 'acta_retiro', 'conduce']);
         const tieneFechaDespacho = !!getField(item, ['fecha_despacho', 'fecha_retiro', 'fecha_entrega']);
 
-        // Detección automática inteligente de si ya fue despachado
         const esDespachado =
           rawEstatus.toUpperCase().includes('DESPACH') ||
           rawEstatus.toUpperCase().includes('ENTREG') ||
@@ -340,11 +594,52 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
 
         const estatusFinal = esDespachado ? 'Despachado' : (rawEstatus || 'Pendiente');
 
+        const pedidoId = String(getField(item, CANDIDATOS_PEDIDO_ID) || '').trim();
+        let codigoRepuesto = String(getField(item, CANDIDATOS_CODIGO_REPUESTO, 'codigo') || '').trim();
+        let descripcionOficial = String(getField(item, CANDIDATOS_DESCRIPCION, 'descripcion') || '').trim();
+
+        let colaborador = String(getField(item, CANDIDATOS_ASESOR, 'asesor') || '').trim();
+        let cliente = String(getField(item, CANDIDATOS_CLIENTE, 'cliente') || '').trim();
+        let numeroOR = String(getField(item, CANDIDATOS_OR, 'or') || '').trim();
+        let vin = String(getField(item, CANDIDATOS_VIN, 'vin') || '').trim();
+        let sucursal = String(getField(item, CANDIDATOS_SUCURSAL) || '').trim();
+        let modeloChangan = String(getField(item, CANDIDATOS_MODELO) || '').trim();
+
+        // HIDRATACIÓN CRUZADA 1: Si faltan datos del repuesto en la matriz, buscar en lineas_pedido
+        const keyUpper = pedidoId.toUpperCase();
+        if ((!codigoRepuesto || !descripcionOficial) && mapLineasPorFolio.has(keyUpper)) {
+          const lineasMatch = mapLineasPorFolio.get(keyUpper)!;
+          if (lineasMatch.length > 0) {
+            const l = lineasMatch[0];
+            if (!codigoRepuesto) codigoRepuesto = String(getField(l, CANDIDATOS_CODIGO_REPUESTO, 'codigo') || l.codigo_repuesto || '').trim();
+            if (!descripcionOficial) descripcionOficial = String(getField(l, CANDIDATOS_DESCRIPCION, 'descripcion') || l.descripcion || '').trim();
+          }
+        }
+
+        // HIDRATACIÓN CRUZADA 2: Si faltan asesor, cliente u OR, buscar en pedidos (cabecera)
+        if (mapPedidosPorFolio.has(keyUpper)) {
+          const p = mapPedidosPorFolio.get(keyUpper)!;
+          if (!colaborador || colaborador === 'Asesor') colaborador = String(getField(p, CANDIDATOS_ASESOR, 'asesor') || p.colaborador || colaborador).trim();
+          if (!cliente || cliente === 'Consumidor Final') cliente = String(getField(p, CANDIDATOS_CLIENTE, 'cliente') || p.cliente || cliente).trim();
+          if (!numeroOR) numeroOR = String(getField(p, CANDIDATOS_OR, 'or') || p.no_cotizacion || '').trim();
+          if (!vin) vin = String(getField(p, CANDIDATOS_VIN, 'vin') || p.vin || '').trim();
+          if (!sucursal) sucursal = String(getField(p, CANDIDATOS_SUCURSAL) || p.sucursal || sucursal).trim();
+          if (!modeloChangan) modeloChangan = String(getField(p, CANDIDATOS_MODELO) || p.modelo_changan || modeloChangan).trim();
+        }
+
+        // INFERENCIA INTELIGENTE: Si no hay código pero la descripción contiene un formato OEM Changan
+        if (!codigoRepuesto && descripcionOficial) {
+          const matchOEM = descripcionOficial.match(/([A-Z0-9]{5,10}[-_][A-Z0-9]{3,6})/i);
+          if (matchOEM) {
+            codigoRepuesto = matchOEM[1].toUpperCase();
+          }
+        }
+
         return {
-          lineaId: String(getField(item, ['linea_id', 'id', 'lineaId']) || `LIN-${Math.random().toString().slice(-6)}`),
-          pedidoId: String(getField(item, ['pedido_id', 'id_pedido', 'pedido', 'folio']) || ''),
-          codigoRepuesto: String(getField(item, ['codigo_repuesto', 'codigo', 'cod_repuesto', 'part_number']) || ''),
-          descripcionOficial: String(getField(item, ['descripcion_oficial', 'descripcion', 'repuesto']) || ''),
+          lineaId: String(getField(item, ['linea_id', 'id', 'lineaId']) || `LIN-${pedidoId}-${idx}`),
+          pedidoId: pedidoId,
+          codigoRepuesto: codigoRepuesto,
+          descripcionOficial: descripcionOficial,
           cantidadSolicitada: cantSolicitada,
           cantidadAsignada: esDespachado ? (cantAsignada || cantSolicitada) : cantAsignada,
           cantidadDespachada: esDespachado ? (cantDespachada || cantSolicitada) : cantDespachada,
@@ -353,71 +648,66 @@ export async function obtenerFilasAdminSupabase(): Promise<FilaRastreador[]> {
           palletAsignado: String(getField(item, ['pallet_asignado', 'pallet', 'pallet_case_no']) || ''),
           packageNo: String(getField(item, ['package_no', 'paquete', 'package']) || ''),
           ubicacionCedis: String(getField(item, ['ubicacion_cedis', 'ubicacion']) || ''),
-          sucursal: String(getField(item, ['sucursal', 'sucursal_destino', 'sucursalorigen']) || 'Villa Lucre'),
-          colaborador: String(getField(item, ['colaborador', 'asesor', 'creado_por', 'usuario']) || 'Asesor'),
-          cliente: String(getField(item, ['cliente', 'nombre_cliente']) || 'Consumidor Final'),
-          modeloChangan: String(getField(item, ['modelo_changan', 'modelo', 'vehiculo']) || 'Changan'),
-          numeroOR: String(getField(item, ['cotizacion_numero_or', 'numero_or', 'or', 'no_cotizacion', 'cotizacion']) || ''),
-          vin: String(getField(item, ['vin', 'chasis']) || ''),
+          sucursal: sucursal || 'Villa Lucre',
+          colaborador: colaborador || 'Asesor',
+          cliente: cliente || 'Consumidor Final',
+          modeloChangan: modeloChangan || 'Changan',
+          numeroOR: numeroOR,
+          vin: vin,
         };
       });
     }
 
-    // 2. Si las tablas matriz estuvieran vacías, intentar desde lineas_pedido y pedidos
-    if (filasSupabase.length === 0) {
-      const { data: lineas, error: lineasError } = await supabase
-        .from('lineas_pedido')
-        .select(`
-          id, folio, codigo_repuesto, descripcion, cantidad,
-          cantidad_asignada, cantidad_despachada, estatus_linea,
-          contenedor_asignado, pallet_asignado, package_no, ubicacion_cedis,
-          pedidos (sucursal, colaborador, cliente, modelo_changan, vin, no_cotizacion)
-        `);
+    // CASO B: Si matriz_pedidos estuviera vacía pero existen lineas_pedido y pedidos
+    if (filasSupabase.length === 0 && dataLineas.length > 0) {
+      filasSupabase = dataLineas.map((item: any, idx: number) => {
+        const pedidoId = String(getField(item, CANDIDATOS_PEDIDO_ID) || item.folio || '').trim();
+        const p = mapPedidosPorFolio.get(pedidoId.toUpperCase()) || {};
 
-      if (!lineasError && lineas && lineas.length > 0) {
-        filasSupabase = lineas.map((item: any) => {
-          const p = item.pedidos || {};
-          const rawEstatus = String(item.estatus_linea || 'Pendiente').trim();
-          const cantSol = Number(item.cantidad) || 0;
-          const cantDesp = Number(item.cantidad_despachada) || 0;
-          const esDesp =
-            rawEstatus.toUpperCase().includes('DESPACH') ||
-            rawEstatus.toUpperCase().includes('ENTREG') ||
-            rawEstatus.toUpperCase().includes('RETIR') ||
-            (cantDesp > 0 && cantSol > 0 && cantDesp >= cantSol);
+        const rawEstatus = String(getField(item, ['estatus_linea', 'estatus', 'estado']) || 'Pendiente').trim();
+        const cantSol = Number(getField(item, CANDIDATOS_CANTIDAD, 'cantidad')) || 1;
+        const cantDesp = Number(getField(item, ['cantidad_despachada', 'despachada'])) || 0;
+        const cantAsig = Number(getField(item, ['cantidad_asignada', 'asignada'])) || 0;
 
-          return {
-            lineaId: String(item.id),
-            pedidoId: String(item.folio || ''),
-            codigoRepuesto: String(item.codigo_repuesto || ''),
-            descripcionOficial: String(item.descripcion || ''),
-            cantidadSolicitada: cantSol,
-            cantidadAsignada: esDesp ? (Number(item.cantidad_asignada) || cantSol) : (Number(item.cantidad_asignada) || 0),
-            cantidadDespachada: esDesp ? (cantDesp || cantSol) : cantDesp,
-            estatusLinea: esDesp ? 'Despachado' : rawEstatus,
-            contenedorAsignado: String(item.contenedor_asignado || ''),
-            palletAsignado: String(item.pallet_asignado || ''),
-            packageNo: String(item.package_no || ''),
-            ubicacionCedis: String(item.ubicacion_cedis || ''),
-            sucursal: String(p.sucursal || 'Desconocida'),
-            colaborador: String(p.colaborador || 'Asesor'),
-            cliente: String(p.cliente || 'Consumidor Final'),
-            modeloChangan: String(p.modelo_changan || 'No especificado'),
-            numeroOR: String(p.no_cotizacion || ''),
-            vin: String(p.vin || ''),
-          };
-        });
-      }
+        const esDesp =
+          rawEstatus.toUpperCase().includes('DESPACH') ||
+          rawEstatus.toUpperCase().includes('ENTREG') ||
+          rawEstatus.toUpperCase().includes('RETIR') ||
+          (cantDesp > 0 && cantSol > 0 && cantDesp >= cantSol);
+
+        return {
+          lineaId: String(item.id || `LIN-${pedidoId}-${idx}`),
+          pedidoId: pedidoId,
+          codigoRepuesto: String(getField(item, CANDIDATOS_CODIGO_REPUESTO, 'codigo') || item.codigo_repuesto || '').trim(),
+          descripcionOficial: String(getField(item, CANDIDATOS_DESCRIPCION, 'descripcion') || item.descripcion || '').trim(),
+          cantidadSolicitada: cantSol,
+          cantidadAsignada: esDesp ? (cantAsig || cantSol) : cantAsig,
+          cantidadDespachada: esDesp ? (cantDesp || cantSol) : cantDesp,
+          estatusLinea: esDesp ? 'Despachado' : rawEstatus,
+          contenedorAsignado: String(item.contenedor_asignado || ''),
+          palletAsignado: String(item.pallet_asignado || ''),
+          packageNo: String(item.package_no || ''),
+          ubicacionCedis: String(item.ubicacion_cedis || ''),
+          sucursal: String(getField(p, CANDIDATOS_SUCURSAL) || p.sucursal || 'Villa Lucre'),
+          colaborador: String(getField(p, CANDIDATOS_ASESOR, 'asesor') || p.colaborador || 'Asesor'),
+          cliente: String(getField(p, CANDIDATOS_CLIENTE, 'cliente') || p.cliente || 'Consumidor Final'),
+          modeloChangan: String(getField(p, CANDIDATOS_MODELO) || p.modelo_changan || 'Changan'),
+          numeroOR: String(getField(p, CANDIDATOS_OR, 'or') || p.no_cotizacion || ''),
+          vin: String(getField(p, CANDIDATOS_VIN, 'vin') || p.vin || ''),
+        };
+      });
     }
 
     // Fusión de filas de Supabase con pedidos locales garantizando que los pedidos nuevos estén siempre visibles
     const mapaUnicos = new Map<string, FilaRastreador>();
     filasSupabase.forEach(f => {
-      const key = `${f.pedidoId}_${f.codigoRepuesto}`.toUpperCase();
+      // Clave única compuesta (evita que pedidos sin código sobrescriban a otros)
+      const key = `${f.pedidoId}___${f.codigoRepuesto || f.lineaId}`.toUpperCase();
       mapaUnicos.set(key, f);
     });
+
     filasLocales.forEach(f => {
-      const key = `${f.pedidoId}_${f.codigoRepuesto}`.toUpperCase();
+      const key = `${f.pedidoId}___${f.codigoRepuesto || f.lineaId}`.toUpperCase();
       // Si ya está en Supabase, prevalece Supabase; si no, se agrega el local
       if (!mapaUnicos.has(key)) {
         mapaUnicos.set(key, f);

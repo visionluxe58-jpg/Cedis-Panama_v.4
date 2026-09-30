@@ -1236,9 +1236,16 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
 
                               {/* Repuesto */}
                               <td className="py-3 px-4 max-w-xs">
-                                <span className="font-mono font-bold text-cyan-700 block text-xs">{fila.codigoRepuesto}</span>
-                                <span className="text-slate-600 truncate block text-[11px]" title={fila.descripcionOficial}>
-                                  {fila.descripcionOficial}
+                                {fila.codigoRepuesto ? (
+                                  <span className="font-mono font-bold text-cyan-700 block text-xs">{fila.codigoRepuesto}</span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded mb-0.5">
+                                    <i className="fas fa-info-circle text-amber-500 text-[9px]"></i>
+                                    {fila.descripcionOficial ? 'Código por asignar' : 'Sin código OEM'}
+                                  </span>
+                                )}
+                                <span className="text-slate-700 truncate block text-[11px] font-medium" title={fila.descripcionOficial}>
+                                  {fila.descripcionOficial || (fila.codigoRepuesto ? 'Repuesto Original Changan' : 'Pieza no detallada en matriz')}
                                 </span>
                                 {fila.vin && (
                                   <span className="text-[10px] text-slate-400 font-mono block">VIN: {fila.vin}</span>
