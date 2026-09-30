@@ -12,6 +12,7 @@ import type {
   EncargadoSucursal,
   PedidoHistorialAsesor,
   LineaHistorialAsesor,
+  EstatusDPL,
 } from '../../domain/models/types';
 
 // Sanitiza la URL de Supabase eliminando /rest/v1, /storage/v1 o barras finales añadidas por error en Vercel
@@ -999,6 +1000,49 @@ export async function guardarDPLCompletoSupabase(
     return { ok: true }; // Fallback exitoso con almacenamiento local
   }
 }
+
+/**
+ * Actualiza el estatus del contenedor/manifiesto DPL en Supabase y LocalStorage
+ */
+export async function actualizarEstadoManifiestoSupabase(
+  contenedorId: string,
+  nuevoEstado: EstatusDPL
+): Promise<{ ok: boolean }> {
+  const contId = (contenedorId || '').trim().toUpperCase();
+  if (!contId) return { ok: false };
+
+  try {
+    // 1. Almacenamiento local (Contenedores DPL)
+    const rawConts = localStorage.getItem('cedis_contenedores_dpl');
+    if (rawConts) {
+      const parsed = JSON.parse(rawConts);
+      const updated = parsed.map((c: any) =>
+        (c.contenedor || '').toUpperCase() === contId ? { ...c, estado: nuevoEstado } : c
+      );
+      localStorage.setItem('cedis_contenedores_dpl', JSON.stringify(updated));
+    }
+
+    // 2. Supabase
+    if (isSupabaseConfigured()) {
+      const { error: err1 } = await supabase
+        .from('dpl_manifiestos')
+        .update({ estado: nuevoEstado })
+        .ilike('contenedor_id', contId);
+
+      if (err1) {
+        await supabase
+          .from('dpl_manifiesto')
+          .update({ estado: nuevoEstado })
+          .ilike('contenedor_id', contId);
+      }
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('Error al actualizar estado de manifiesto en Supabase:', err);
+    return { ok: false };
+  }
+}
+
 
 /**
  * Aplica en lote los resultados del Matching FIFO o Pre-Asignación en Tránsito a los pedidos

@@ -24,7 +24,7 @@ import {
   ExternalLink,
   Info
 } from 'lucide-react';
-import type { ContenedorManifiesto, DetalleDPL, EstatusDPL, UsuarioActivo } from '../../domain/models/types';
+import type { ContenedorManifiesto, DetalleDPL, EstatusDPL, UsuarioActivo, FilaRastreador } from '../../domain/models/types';
 import {
   cargarContenedores,
   guardarContenedores,
@@ -40,17 +40,24 @@ import {
   obtenerEstadisticasContenedores,
   obtenerEstadisticasDetalles
 } from '../../domain/services/gestionDPL';
+import { actualizarEstadoManifiestoSupabase } from '../../data/api/supabaseClient';
 
 interface CruceDPLProps {
   usuario?: UsuarioActivo;
   onAbrirModalDPL: () => void;
   onAbrirRastreador?: (codigo?: string) => void;
+  onIrAMatching?: (modo?: 'transito' | 'bodega') => void;
+  filas?: FilaRastreador[];
+  onActualizarEstatusManifiesto?: (contenedorId: string, nuevoEstado: EstatusDPL) => void;
 }
 
 export const CruceDPL: React.FC<CruceDPLProps> = ({
   usuario,
   onAbrirModalDPL,
   onAbrirRastreador,
+  onIrAMatching,
+  filas,
+  onActualizarEstatusManifiesto,
 }) => {
   // Estados principales
   const [contenedores, setContenedores] = useState<ContenedorManifiesto[]>([]);
@@ -136,6 +143,31 @@ export const CruceDPL: React.FC<CruceDPLProps> = ({
     return buscarDetallesDPL(itemsContenedor, busquedaRepuesto);
   }, [itemsContenedor, busquedaRepuesto]);
 
+  // Cruce de repuestos en DPL contra pedidos pendientes de las sucursales
+  const { mapaCoincidenciasPorContenedor, totalCoincidenciasGlobal } = useMemo(() => {
+    const mapa = new Map<string, number>();
+    let totalGlobal = 0;
+    if (!filas || filas.length === 0 || !detallesDPL || detallesDPL.length === 0) {
+      return { mapaCoincidenciasPorContenedor: mapa, totalCoincidenciasGlobal: 0 };
+    }
+
+    const pedidosPendientes = filas.filter(f => f.estatusLinea !== 'Despachado');
+    const setCodigosPendientes = new Set(
+      pedidosPendientes.map(p => (p.codigoRepuesto || '').trim().toUpperCase())
+    );
+
+    detallesDPL.forEach(d => {
+      const cod = (d.codigoCompra || d.codigoSuministrado || (d as any).codigoRepuesto || '').trim().toUpperCase();
+      if (cod && setCodigosPendientes.has(cod)) {
+        const cont = (d.contenedor || (d as any).contenedorId || '').trim().toUpperCase();
+        mapa.set(cont, (mapa.get(cont) || 0) + 1);
+        totalGlobal++;
+      }
+    });
+
+    return { mapaCoincidenciasPorContenedor: mapa, totalCoincidenciasGlobal: totalGlobal };
+  }, [filas, detallesDPL]);
+
   // Manejador para cambiar el estatus del contenedor
   const handleCambiarEstatus = async (nuevoEstado: EstatusDPL, contIdOverride?: string) => {
     const contId = contIdOverride || (contenedorActivo ? contenedorActivo.contenedor : '');
@@ -163,13 +195,28 @@ export const CruceDPL: React.FC<CruceDPLProps> = ({
     setEstadosLocales(prev => ({ ...prev, [idKey]: nuevoEstado }));
 
     try {
-      // Actualizar en el estado global
+      // 1. Actualizar en el estado global local
       const contenedoresActualizados = actualizarEstadoContenedor(contenedores, contId, nuevoEstado);
       setContenedores(contenedoresActualizados);
+
+      // 2. Persistir en Supabase y notificar a la vista matriz
+      await actualizarEstadoManifiestoSupabase(contId, nuevoEstado);
+      onActualizarEstatusManifiesto?.(contId, nuevoEstado);
 
       setProcesandoAccion(false);
       setMensajeExito(`Contenedor ${contId} actualizado a ${nuevoEstado}.`);
       setTimeout(() => setMensajeExito(null), 6000);
+
+      // Si fue recibido y hay callback para ir a matching, ofrecer salto directo
+      if (nuevoEstado === 'RECIBIDO' && onIrAMatching) {
+        const irAMatchingAhora = window.confirm(
+          `✅ ¡Contenedor ${contId} marcado como RECIBIDO en Bodega CEDIS!\n\n` +
+          '¿Desea ir directamente al Motor de Matching FIFO para cruzar y asignar los repuestos a los pedidos de las sucursales?'
+        );
+        if (irAMatchingAhora) {
+          onIrAMatching('bodega');
+        }
+      }
     } catch (err) {
       console.error('Error al actualizar estado:', err);
       setProcesandoAccion(false);
@@ -230,6 +277,23 @@ export const CruceDPL: React.FC<CruceDPLProps> = ({
             >
               <Search className="w-3.5 h-3.5 text-cyan-400" />
               <span>Rastreador Universal</span>
+            </button>
+          )}
+
+          {onIrAMatching && (
+            <button
+              type="button"
+              onClick={() => onIrAMatching('transito')}
+              className="bg-gradient-to-r from-purple-700 to-indigo-600 hover:from-purple-600 hover:to-indigo-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-lg shadow-purple-900/30 transition cursor-pointer"
+              title="Ir a Motor de Matching FIFO para cruzar y asignar repuestos"
+            >
+              <i className="fas fa-random text-white"></i>
+              <span>Motor de Matching FIFO</span>
+              {totalCoincidenciasGlobal > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white text-purple-900 font-black">
+                  {totalCoincidenciasGlobal}
+                </span>
+              )}
             </button>
           )}
 
@@ -457,6 +521,27 @@ export const CruceDPL: React.FC<CruceDPLProps> = ({
                       </span>
                     </div>
 
+                    {/* Badge de coincidencias con pedidos pendientes */}
+                    {mapaCoincidenciasPorContenedor.has((c.contenedor || '').toUpperCase()) && (
+                      <div className="mt-2 px-2 py-1 rounded bg-blue-950/80 border border-blue-500/40 flex items-center justify-between text-[10px] text-blue-300">
+                        <span className="flex items-center gap-1.5 font-bold">
+                          <i className="fas fa-bolt text-yellow-300"></i>
+                          <span>{mapaCoincidenciasPorContenedor.get((c.contenedor || '').toUpperCase())} repuestos solicitados</span>
+                        </span>
+                        {onIrAMatching && (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onIrAMatching(estatusNorm === 'RECIBIDO' ? 'bodega' : 'transito');
+                            }}
+                            className="text-cyan-300 hover:text-white font-bold hover:underline cursor-pointer"
+                          >
+                            Matching &rarr;
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {/* Botón de acción rápida en la tarjeta */}
                     <div className="mt-2.5 pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px]">
                       {estatusNorm === 'RECIBIDO' ? (
@@ -618,6 +703,54 @@ export const CruceDPL: React.FC<CruceDPLProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Banner de Cruce y Acceso Directo a Matching FIFO */}
+              {(() => {
+                const matches = mapaCoincidenciasPorContenedor.get((contenedorActivo.contenedor || '').toUpperCase()) || 0;
+                return (
+                  <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 border border-blue-500/40 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0 border border-blue-500/30">
+                        <i className="fas fa-random text-base"></i>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-white flex items-center gap-2">
+                          <span>
+                            {matches > 0
+                              ? `¡${matches} repuesto${matches > 1 ? 's' : ''} de este embarque coinciden con pedidos de sucursales!`
+                              : 'Cruce automático con pedidos pendientes de clientes'}
+                          </span>
+                          {matches > 0 && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] bg-blue-500/30 text-blue-200 border border-blue-400/30 font-semibold">
+                              Match Detectado
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {estatusActualNormalizado === 'RECIBIDO'
+                            ? 'Mercancía en bodega. Aplica Matching FIFO en firme para reservar el stock y emitir etiquetas.'
+                            : 'Carga en camino. Aplica la Pre-Asignación en Tránsito para registrar pallet y contenedor en los pedidos.'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {onIrAMatching && (
+                      <button
+                        type="button"
+                        onClick={() => onIrAMatching(estatusActualNormalizado === 'RECIBIDO' ? 'bodega' : 'transito')}
+                        className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2 cursor-pointer shrink-0 transition"
+                      >
+                        <i className="fas fa-bolt text-yellow-300"></i>
+                        <span>
+                          {estatusActualNormalizado === 'RECIBIDO'
+                            ? 'Ir a Matching FIFO (Bodega)'
+                            : 'Ir a Pre-Asignación (Tránsito)'}
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Barra de Filtro de Repuestos */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">

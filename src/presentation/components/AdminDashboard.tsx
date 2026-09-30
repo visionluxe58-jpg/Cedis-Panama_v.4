@@ -2070,6 +2070,20 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
               }}
               onAbrirModalDPL={() => setModalDPLAbierto(true)}
               onAbrirRastreador={handleAbrirRastreador}
+              onIrAMatching={(modo) => {
+                if (modo) setModoMatching(modo);
+                setVistaActiva('matching');
+              }}
+              filas={filas}
+              onActualizarEstatusManifiesto={(contId, nuevoEstado) => {
+                setManifiestos(prev =>
+                  prev.map(m =>
+                    (m.contenedorId || '').toUpperCase() === contId.toUpperCase()
+                      ? { ...m, estado: nuevoEstado }
+                      : m
+                  )
+                );
+              }}
             />
           </div>
         )}
