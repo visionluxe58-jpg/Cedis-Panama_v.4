@@ -23,152 +23,217 @@ export interface DatosRetiroCedis {
 }
 
 /**
- * 1. ETIQUETA OFICIAL PARA CAJA / BULTO DE PEDIDO ESPECIAL
- * Formato estándar de etiqueta logística 100mm x 150mm (4x6 pulgadas)
+ * Helper para extraer N° de Cotización y NO. OR de forma separada
  */
-export function generarEtiquetaPedidoEspecialPDF(linea: FilaRastreador): jsPDF {
+export function extraerCotizacionYOR(rawOR?: string): { cotizacion: string; noOR: string } {
+  if (!rawOR) return { cotizacion: '-', noOR: '-' };
+  const str = String(rawOR).trim();
+
+  let cotizacion = '-';
+  let noOR = '-';
+
+  const cotMatch = str.match(/\bCOT(?:IZACION|IZACIÓN)?:?\s*([A-Za-z0-9\-_]+)/i);
+  const otMatch = str.match(/\b(?:OT|OR|NO\.?\s*OR)[\s:\-_]+([A-Za-z0-9\-_]+)/i);
+
+  if (cotMatch) cotizacion = cotMatch[1];
+  if (otMatch) noOR = otMatch[1].startsWith('-') ? otMatch[1].slice(1) : otMatch[1];
+
+  if (!cotMatch && !otMatch) {
+    if (/^(?:OT|OR)[\-_]?[0-9]+/i.test(str)) {
+      noOR = str;
+    } else if (/^[0-9]{4,8}$/.test(str)) {
+      cotizacion = str;
+    } else {
+      noOR = str;
+    }
+  }
+
+  return { cotizacion, noOR };
+}
+
+/**
+ * Dibuja una etiqueta individual siguiendo los lineamientos de Toyota Logistics
+ * Formato 100% Blanco y Negro (B&W) para impresión térmica o láser en papel Carta.
+ * Dimensiones: 95 mm de ancho x 62 mm de alto (hasta 8 por hoja 8 1/2 x 11).
+ */
+export function dibujarEtiquetaToyota(
+  doc: jsPDF,
+  x: number,
+  y: number,
+  linea: FilaRastreador
+): void {
+  const { cotizacion, noOR } = extraerCotizacionYOR(linea.numeroOR);
+  const tieneUbicacionReal = Boolean(
+    linea.ubicacionCedis &&
+    linea.ubicacionCedis.trim() !== '' &&
+    !linea.ubicacionCedis.toUpperCase().includes('GENERAL')
+  );
+
+  // 1. Marco Exterior Sólido (Toyota Standard)
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.6);
+  doc.rect(x, y, 95, 62);
+
+  // 2. Encabezado Invertido Negro
+  doc.setFillColor(0, 0, 0);
+  doc.rect(x, y, 95, 6.5, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.text('Changan Auto Panama', x + 3, y + 4.5);
+  doc.setFontSize(6.5);
+  doc.text('PEDIDO ESPECIAL - CEDIS', x + 92, y + 4.5, { align: 'right' });
+
+  // 3. Recuadro Destino / Sucursal
+  doc.setLineWidth(0.3);
+  doc.rect(x, y + 6.5, 95, 8.5);
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(5.5);
+  doc.text('DESTINO / SUCURSAL:', x + 2.5, y + 9.5);
+  doc.setFontSize(11);
+  doc.text((linea.sucursal || 'SUCURSAL').toUpperCase(), x + 2.5, y + 14);
+
+  // 4. Bloque Metadatos: PEDIDO (antes folio), Cotización y No. OR
+  doc.rect(x, y + 15, 42, 8.5);
+  doc.setFontSize(5);
+  doc.text('PEDIDO:', x + 2, y + 18);
+  doc.setFontSize(9.5);
+  doc.text(linea.pedidoId || 'PED-GEN', x + 2, y + 22.3);
+
+  doc.rect(x + 42, y + 15, 53, 8.5);
+  doc.setFontSize(6.5);
+  doc.text(`N° COT: ${cotizacion}`, x + 44, y + 18.5);
+  doc.text(`NO. OR: ${noOR}`, x + 44, y + 22.3);
+
+  // 5. Bloque Central: Código de Parte OEM y Cantidad (Recuadro Grande Toyota)
+  doc.rect(x, y + 23.5, 72, 15.5);
+  doc.setFontSize(5.5);
+  doc.text('PART NO. / CÓDIGO DE PARTE:', x + 2, y + 26.5);
+  doc.setFontSize(11.5);
+  doc.text(linea.codigoRepuesto || 'N/A', x + 2, y + 31.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.5);
+  const descLines = doc.splitTextToSize((linea.descripcionOficial || 'REPUESTO ORIGINAL CHANGAN').toUpperCase(), 68);
+  doc.text(descLines.slice(0, 2), x + 2, y + 35);
+
+  // Recuadro Cantidad (QTY)
+  doc.setFont('helvetica', 'bold');
+  doc.rect(x + 72, y + 23.5, 23, 15.5);
+  doc.setFontSize(5.5);
+  doc.text('CANT / QTY', x + 83.5, y + 27, { align: 'center' });
+  doc.setFontSize(15);
+  doc.text(String(linea.cantidadSolicitada || 1), x + 83.5, y + 35, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(5);
+  doc.text('PIEZA(S)', x + 83.5, y + 38, { align: 'center' });
+
+  // 6. Bloque Cliente y Ubicación / Pallet
+  doc.rect(x, y + 39, 50, 11);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(5);
+  doc.text('CLIENTE:', x + 2, y + 42.5);
+  doc.setFontSize(6.5);
+  const clienteText = doc.splitTextToSize((linea.cliente || 'TALLER / SUCURSAL').toUpperCase(), 46)[0];
+  doc.text(clienteText, x + 2, y + 46);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(5.5);
+  doc.text(`ASESOR: ${(linea.colaborador || '-').toUpperCase()}`, x + 2, y + 49.5);
+
+  // Recuadro Ubicación en CEDIS o Número de Pallet si no tiene ubicación
+  doc.rect(x + 50, y + 39, 45, 11);
+  if (tieneUbicacionReal) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(5);
+    doc.text('UBICACIÓN BODEGA CEDIS:', x + 52, y + 42.5);
+    doc.setFontSize(8.5);
+    doc.text(linea.ubicacionCedis.toUpperCase(), x + 52, y + 46.5);
+    if (linea.palletAsignado) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.5);
+      doc.text(`PALLET: ${linea.palletAsignado}`, x + 52, y + 49.5);
+    }
+  } else {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(5);
+    doc.text('N° DE PALLET ASIGNADO:', x + 52, y + 42.5);
+    const palletTexto = linea.palletAsignado || linea.contenedorAsignado || 'CEDIS / POR ASIGNAR';
+    doc.setFontSize(7.5);
+    doc.text(palletTexto.toUpperCase(), x + 52, y + 46.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(4.8);
+    doc.text('(SIN UBICACIÓN FIJA EN CEDIS)', x + 52, y + 49.5);
+  }
+
+  // 7. Bloque Código de Barras B&W
+  doc.rect(x, y + 50, 95, 12);
+  doc.setFillColor(0, 0, 0);
+  const barcodeY = y + 51.5;
+  const barcodeH = 5.5;
+  const bars = [1.2, 0.8, 2.0, 0.8, 1.0, 2.2, 0.8, 1.2, 0.8, 1.8, 1.0, 0.8, 2.2, 0.8, 1.2, 1.6, 0.8, 1.2, 0.8, 1.8, 1.0, 0.8, 2.2, 1.2, 0.8, 1.6, 0.8, 1.2, 2.0];
+  let curX = x + 16;
+  for (let i = 0; i < bars.length; i++) {
+    const w = bars[i];
+    if (i % 2 === 0) {
+      doc.rect(curX, barcodeY, w, barcodeH, 'F');
+    }
+    curX += w + 0.6;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`*${linea.pedidoId}-${linea.codigoRepuesto}*`, x + 47.5, y + 60.5, { align: 'center' });
+}
+
+// Posiciones para cuadrícula de 8 etiquetas por hoja tamaño Carta (2 columnas x 4 filas)
+const POSICIONES_8_POR_HOJA = [
+  { x: 10, y: 9 },      // Col 1, Fila 1
+  { x: 110.9, y: 9 },   // Col 2, Fila 1
+  { x: 10, y: 75 },     // Col 1, Fila 2
+  { x: 110.9, y: 75 },  // Col 2, Fila 2
+  { x: 10, y: 141 },    // Col 1, Fila 3
+  { x: 110.9, y: 141 }, // Col 2, Fila 3
+  { x: 10, y: 207 },    // Col 1, Fila 4
+  { x: 110.9, y: 207 }, // Col 2, Fila 4
+];
+
+/**
+ * 1. ETIQUETAS OFICIALES TOYOTA B&W EN HOJA CARTA 8 1/2 X 11
+ * Organiza hasta 8 etiquetas por hoja tamaño Carta sin desperdiciar papel.
+ */
+export function generarEtiquetasPedidosEspecialesPDF(lineas: FilaRastreador[]): jsPDF {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
-    format: [100, 150], // 100mm x 150mm (4x6")
+    format: 'letter', // 215.9 mm x 279.4 mm (8 1/2 x 11 pulgadas)
   });
 
-  // Borde exterior de corte
-  doc.setDrawColor(203, 213, 225);
-  doc.setLineWidth(0.5);
-  doc.rect(2, 2, 96, 146);
-
-  // Encabezado
-  doc.setFillColor(185, 28, 28); // #B91C1C Rojo Changan
-  doc.rect(3, 3, 94, 16, 'F');
-
-  doc.setTextColor(255, 255, 255);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
-  doc.text('CHANGAN MOTORS PANAMÁ', 50, 9, { align: 'center' });
-  doc.setFontSize(7.5);
-  doc.setFont('helvetica', 'normal');
-  doc.text('CEDIS CENTRAL - PEDIDO ESPECIAL', 50, 14, { align: 'center' });
-
-  // Banner Gigante de Sucursal Destino
-  doc.setFillColor(248, 250, 252);
-  doc.rect(3, 20, 94, 18, 'F');
-  doc.setDrawColor(185, 28, 28);
-  doc.setLineWidth(0.8);
-  doc.rect(5, 22, 90, 14);
-
-  doc.setTextColor(100, 116, 139);
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'bold');
-  doc.text('SUCURSAL DESTINO / RETIRO:', 50, 25.5, { align: 'center' });
-
-  doc.setTextColor(185, 28, 28);
-  doc.setFontSize(14);
-  doc.setFont('helvetica', 'bold');
-  doc.text(linea.sucursal.toUpperCase(), 50, 32, { align: 'center' });
-
-  // Datos del Pedido
-  doc.setTextColor(30, 41, 59);
-  doc.setFontSize(7.5);
-  doc.setFont('helvetica', 'bold');
-  doc.text('FOLIO:', 6, 44);
-  doc.setFont('helvetica', 'normal');
-  doc.text(linea.pedidoId, 22, 44);
-
-  doc.setFont('helvetica', 'bold');
-  doc.text('NO. OR:', 55, 44);
-  doc.setFont('helvetica', 'normal');
-  doc.text(linea.numeroOR || 'Stock / N/A', 70, 44);
-
-  doc.setFont('helvetica', 'bold');
-  doc.text('CLIENTE:', 6, 50);
-  doc.setFont('helvetica', 'normal');
-  doc.text(linea.cliente || 'Taller Sucursal', 22, 50);
-
-  doc.setFont('helvetica', 'bold');
-  doc.text('ASESOR:', 6, 56);
-  doc.setFont('helvetica', 'normal');
-  doc.text(linea.colaborador || 'Asesor Repuestos', 22, 56);
-
-  if (linea.vin) {
-    doc.setFont('helvetica', 'bold');
-    doc.text('VIN:', 6, 62);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.5);
-    doc.text(linea.vin, 22, 62);
-    doc.setFontSize(7.5);
+  if (!lineas || lineas.length === 0) {
+    return doc;
   }
 
-  // Línea divisoria
-  doc.setDrawColor(226, 232, 240);
-  doc.setLineWidth(0.5);
-  doc.line(5, 66, 95, 66);
+  lineas.forEach((linea, index) => {
+    const posicionEnHoja = index % 8;
 
-  // Bloque Central del Repuesto
-  doc.setFillColor(241, 245, 249);
-  doc.roundedRect(5, 69, 90, 36, 2, 2, 'F');
-
-  doc.setTextColor(100, 116, 139);
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'bold');
-  doc.text('CÓDIGO DE PARTE CHANGAN:', 8, 74);
-
-  doc.setTextColor(14, 116, 144); // Cyan 700
-  doc.setFontSize(13);
-  doc.setFont('helvetica', 'bold');
-  doc.text(linea.codigoRepuesto, 8, 81);
-
-  doc.setTextColor(30, 41, 59);
-  doc.setFontSize(7.5);
-  doc.setFont('helvetica', 'normal');
-  const splitDesc = doc.splitTextToSize(linea.descripcionOficial || 'Repuesto Original Changan', 84);
-  doc.text(splitDesc, 8, 87);
-
-  doc.setTextColor(185, 28, 28);
-  doc.setFontSize(10);
-  doc.setFont('helvetica', 'bold');
-  doc.text(`CANTIDAD: ${linea.cantidadSolicitada} UNID.`, 8, 101);
-
-  // Ubicación y Almacenamiento en CEDIS
-  doc.setFillColor(254, 242, 242);
-  doc.roundedRect(5, 108, 90, 16, 2, 2, 'F');
-  doc.setDrawColor(254, 202, 202);
-  doc.rect(5, 108, 90, 16, 'S');
-
-  doc.setTextColor(153, 27, 27);
-  doc.setFontSize(7);
-  doc.setFont('helvetica', 'bold');
-  doc.text('UBICACIÓN EN BODEGA CEDIS:', 8, 113);
-
-  doc.setFontSize(10);
-  doc.text(linea.ubicacionCedis || 'CEDIS-A1 (General)', 8, 119);
-
-  if (linea.palletAsignado) {
-    doc.setFontSize(7);
-    doc.text(`Pallet: ${linea.palletAsignado}`, 55, 119);
-  }
-
-  // Código de Barras Simulado
-  doc.setFillColor(30, 41, 59);
-  const startX = 14;
-  const barcodeY = 127;
-  const barcodeHeight = 11;
-  const bars = [2, 1, 3, 1, 2, 4, 1, 2, 1, 3, 2, 1, 4, 1, 2, 3, 1, 2, 1, 3, 2, 1, 4, 2, 1, 3, 1, 2, 4];
-  let curX = startX;
-  for (let i = 0; i < bars.length; i++) {
-    const w = bars[i] * 0.7;
-    if (i % 2 === 0) {
-      doc.rect(curX, barcodeY, w, barcodeHeight, 'F');
+    // Al llegar a la 9na, 17va, etc., agregar nueva hoja Carta
+    if (index > 0 && posicionEnHoja === 0) {
+      doc.addPage('letter', 'portrait');
     }
-    curX += w + 0.8;
-  }
 
-  doc.setTextColor(100, 116, 139);
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`*${linea.pedidoId}-${linea.codigoRepuesto}*`, 50, 142, { align: 'center' });
+    const pos = POSICIONES_8_POR_HOJA[posicionEnHoja];
+    dibujarEtiquetaToyota(doc, pos.x, pos.y, linea);
+  });
 
   return doc;
+}
+
+/**
+ * Alias retrocompatible para generar etiqueta individual en formato Carta
+ */
+export function generarEtiquetaPedidoEspecialPDF(linea: FilaRastreador): jsPDF {
+  return generarEtiquetasPedidosEspecialesPDF([linea]);
 }
 
 /**
@@ -363,132 +428,22 @@ export function generarActaRetiroCedisPDF(datos: DatosRetiroCedis): jsPDF {
 }
 
 /**
- * Descarga la etiqueta 4x6" en PDF
+ * Descarga una etiqueta individual en formato estándar Carta (8 1/2 x 11)
  */
 export function descargarEtiquetaPedido(linea: FilaRastreador): void {
-  const doc = generarEtiquetaPedidoEspecialPDF(linea);
+  const doc = generarEtiquetasPedidosEspecialesPDF([linea]);
   const nombre = `ETIQUETA_${linea.pedidoId}_${linea.codigoRepuesto}.pdf`;
   doc.save(nombre);
 }
 
 /**
- * Descarga etiquetas en lote (un PDF con una página por repuesto)
+ * Descarga etiquetas en lote optimizadas en hojas tamaño Carta 8 1/2 x 11 (hasta 8 etiquetas por hoja)
  */
 export function descargarEtiquetasEnLote(lineas: FilaRastreador[]): void {
-  if (lineas.length === 0) return;
+  if (!lineas || lineas.length === 0) return;
 
-  const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'mm',
-    format: [100, 150],
-  });
-
-  lineas.forEach((linea, index) => {
-    if (index > 0) {
-      doc.addPage([100, 150], 'portrait');
-    }
-
-    // Dibujar etiqueta en la página actual
-    doc.setDrawColor(203, 213, 225);
-    doc.setLineWidth(0.5);
-    doc.rect(2, 2, 96, 146);
-
-    doc.setFillColor(185, 28, 28);
-    doc.rect(3, 3, 94, 16, 'F');
-
-    doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
-    doc.text('CHANGAN MOTORS PANAMÁ', 50, 9, { align: 'center' });
-    doc.setFontSize(7.5);
-    doc.setFont('helvetica', 'normal');
-    doc.text('CEDIS CENTRAL - PEDIDO ESPECIAL', 50, 14, { align: 'center' });
-
-    doc.setFillColor(248, 250, 252);
-    doc.rect(3, 20, 94, 18, 'F');
-    doc.setDrawColor(185, 28, 28);
-    doc.setLineWidth(0.8);
-    doc.rect(5, 22, 90, 14);
-
-    doc.setTextColor(100, 116, 139);
-    doc.setFontSize(6.5);
-    doc.setFont('helvetica', 'bold');
-    doc.text('SUCURSAL DESTINO / RETIRO:', 50, 25.5, { align: 'center' });
-
-    doc.setTextColor(185, 28, 28);
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text(linea.sucursal.toUpperCase(), 50, 32, { align: 'center' });
-
-    doc.setTextColor(30, 41, 59);
-    doc.setFontSize(7.5);
-    doc.setFont('helvetica', 'bold');
-    doc.text('FOLIO:', 6, 44);
-    doc.setFont('helvetica', 'normal');
-    doc.text(linea.pedidoId, 22, 44);
-
-    doc.setFont('helvetica', 'bold');
-    doc.text('NO. OR:', 55, 44);
-    doc.setFont('helvetica', 'normal');
-    doc.text(linea.numeroOR || 'Stock / N/A', 70, 44);
-
-    doc.setFont('helvetica', 'bold');
-    doc.text('CLIENTE:', 6, 50);
-    doc.setFont('helvetica', 'normal');
-    doc.text(linea.cliente || 'Taller Sucursal', 22, 50);
-
-    doc.setFont('helvetica', 'bold');
-    doc.text('ASESOR:', 6, 56);
-    doc.setFont('helvetica', 'normal');
-    doc.text(linea.colaborador || 'Asesor Repuestos', 22, 56);
-
-    doc.setDrawColor(226, 232, 240);
-    doc.line(5, 66, 95, 66);
-
-    doc.setFillColor(241, 245, 249);
-    doc.roundedRect(5, 69, 90, 36, 2, 2, 'F');
-
-    doc.setTextColor(100, 116, 139);
-    doc.setFontSize(6.5);
-    doc.setFont('helvetica', 'bold');
-    doc.text('CÓDIGO DE PARTE CHANGAN:', 8, 74);
-
-    doc.setTextColor(14, 116, 144);
-    doc.setFontSize(13);
-    doc.setFont('helvetica', 'bold');
-    doc.text(linea.codigoRepuesto, 8, 81);
-
-    doc.setTextColor(30, 41, 59);
-    doc.setFontSize(7.5);
-    doc.setFont('helvetica', 'normal');
-    const splitDesc = doc.splitTextToSize(linea.descripcionOficial || 'Repuesto Original Changan', 84);
-    doc.text(splitDesc, 8, 87);
-
-    doc.setTextColor(185, 28, 28);
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'bold');
-    doc.text(`CANTIDAD: ${linea.cantidadSolicitada} UNID.`, 8, 101);
-
-    doc.setFillColor(254, 242, 242);
-    doc.roundedRect(5, 108, 90, 16, 2, 2, 'F');
-    doc.setDrawColor(254, 202, 202);
-    doc.rect(5, 108, 90, 16, 'S');
-
-    doc.setTextColor(153, 27, 27);
-    doc.setFontSize(7);
-    doc.setFont('helvetica', 'bold');
-    doc.text('UBICACIÓN EN BODEGA CEDIS:', 8, 113);
-
-    doc.setFontSize(10);
-    doc.text(linea.ubicacionCedis || 'CEDIS-A1 (General)', 8, 119);
-
-    if (linea.palletAsignado) {
-      doc.setFontSize(7);
-      doc.text(`Pallet: ${linea.palletAsignado}`, 55, 119);
-    }
-  });
-
-  doc.save(`LOTE_ETIQUETAS_${lineas.length}_PIEZAS.pdf`);
+  const doc = generarEtiquetasPedidosEspecialesPDF(lineas);
+  doc.save(`ETIQUETAS_CHANGAN_CEDIS_${lineas.length}_PIEZAS.pdf`);
 }
 
 /**

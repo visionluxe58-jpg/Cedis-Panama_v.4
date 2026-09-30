@@ -347,7 +347,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
     }
   };
 
-  // Imprimir etiquetas en lote (PDF con tamaño 100x150mm / 4x6" por página)
+  // Imprimir etiquetas en lote (Formato Toyota B&W en hoja Carta 8 1/2 x 11, hasta 8 por hoja)
   const handleImprimirEtiquetasLote = () => {
     const seleccionados = filas.filter(f => selectedLineas.has(f.lineaId));
     if (seleccionados.length === 0) {
@@ -355,13 +355,14 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
       return;
     }
     descargarEtiquetasEnLote(seleccionados);
-    notificar(`Generando PDF con ${seleccionados.length} etiquetas de pedido especial...`);
+    const totalHojas = Math.ceil(seleccionados.length / 8);
+    notificar(`Generando PDF con ${seleccionados.length} etiquetas en ${totalHojas} hoja(s) Carta (8 por hoja, formato Toyota B&W)...`);
   };
 
-  // Descargar etiqueta individual
+  // Descargar etiqueta individual en formato Carta
   const handleDescargarEtiqueta = (fila: FilaRastreador) => {
     descargarEtiquetaPedido(fila);
-    notificar(`Etiqueta de pedido especial generada para ${fila.codigoRepuesto}.`);
+    notificar(`Etiqueta generada para ${fila.codigoRepuesto} (Formato Toyota B&W, hoja Carta).`);
   };
 
   // Acción rápida: Asignar Stock a una línea
@@ -1293,7 +1294,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                       <button
                         onClick={handleImprimirEtiquetasLote}
                         className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 active:bg-cyan-700 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-                        title="Imprimir etiquetas de pedidos especiales (100x150mm) para los pedidos seleccionados"
+                        title="Imprimir etiquetas en hoja Carta (8 1/2 x 11, hasta 8 por hoja, formato Toyota B&W)"
                       >
                         <i className="fas fa-tags text-cyan-200"></i>
                         <span>Imprimir Etiquetas PDF ({selectedLineas.size})</span>
@@ -1500,7 +1501,7 @@ export default function AdminDashboard({ auth, onLogout }: AdminDashboardProps) 
                                   <button
                                     onClick={() => handleDescargarEtiqueta(fila)}
                                     className="px-2 py-1 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-300 rounded font-bold text-[11px] transition-colors flex items-center gap-1"
-                                    title="Descargar e imprimir Etiqueta Oficial de Pedido Especial (100x150mm / 4x6 pulg.)"
+                                    title="Descargar e imprimir Etiqueta Oficial de Pedido Especial (Formato Toyota B&W en hoja Carta 8 1/2 x 11)"
                                   >
                                     <i className="fas fa-tag text-cyan-600"></i>
                                     <span>Etiqueta</span>
